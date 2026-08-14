@@ -12,7 +12,7 @@ export function validateMonitor(raw: unknown, id: string, label = 'Monitor'): Mo
   const type = (m.type as MonitorType | undefined) ?? ({'tcp:':'tcp','dns:':'dns','ping:':'ping','ws:':'websocket','wss:':'websocket'} as Record<string,MonitorType>)[url.protocol] ?? 'http';
   if (!['http','tcp','dns','ping','websocket','ssl','heartbeat'].includes(type)) throw new Error(`${label}: unsupported monitor type`);
   if (type === 'heartbeat') {
-    if (typeof m.expectedInterval !== 'number' || !Number.isFinite(m.expectedInterval) || m.expectedInterval < 1) throw new Error(`${label}: expectedInterval must be at least 1 second`);
+    if (m.expectedInterval !== undefined && (typeof m.expectedInterval !== 'number' || !Number.isFinite(m.expectedInterval) || m.expectedInterval < 1)) throw new Error(`${label}: expectedInterval must be at least 1 second`);
     if (m.gracePeriod !== undefined && (typeof m.gracePeriod !== 'number' || !Number.isFinite(m.gracePeriod) || m.gracePeriod < 0)) throw new Error(`${label}: gracePeriod must be zero or greater`);
   }
   if (type === 'http' || type === 'ssl') { if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`${label}: HTTP/SSL monitors require HTTP or HTTPS URLs`); }
@@ -29,7 +29,7 @@ export function validateMonitor(raw: unknown, id: string, label = 'Monitor'): Mo
   if (m.body !== undefined && typeof m.body !== 'string') throw new Error(`${label}: body must be a string`);
   if (m.jsonPath !== undefined && typeof m.jsonPath !== 'string') throw new Error(`${label}: jsonPath must be a string`);
   if (m.jsonExpected !== undefined && typeof m.jsonExpected !== 'string') throw new Error(`${label}: jsonExpected must be a string`);
-  return { id, name: m.name.trim(), url: url.toString(), type, group: typeof m.group === 'string' ? m.group.trim() : undefined, interval: m.interval as number, timeout: m.timeout as number, expectedStatus: (m.expectedStatus as number | undefined) ?? 200, expectedInterval: type === 'heartbeat' ? m.expectedInterval as number : undefined, gracePeriod: type === 'heartbeat' ? (m.gracePeriod as number | undefined) ?? 0 : undefined, keyword: m.keyword as string | undefined, maxLatency: m.maxLatency as number | undefined, active: m.active !== false, method: (m.method as string | undefined)?.toUpperCase() ?? 'GET', headers: m.headers as Record<string,string> | undefined, body: m.body as string | undefined, jsonPath: m.jsonPath as string | undefined, jsonExpected: m.jsonExpected as string | undefined };
+  return { id, name: m.name.trim(), url: url.toString(), type, group: typeof m.group === 'string' ? m.group.trim() : undefined, interval: m.interval as number, timeout: m.timeout as number, expectedStatus: (m.expectedStatus as number | undefined) ?? 200, expectedInterval: type === 'heartbeat' ? (m.expectedInterval as number | undefined) ?? 60 : undefined, gracePeriod: type === 'heartbeat' ? (m.gracePeriod as number | undefined) ?? 0 : undefined, keyword: m.keyword as string | undefined, maxLatency: m.maxLatency as number | undefined, active: m.active !== false, method: (m.method as string | undefined)?.toUpperCase() ?? 'GET', headers: m.headers as Record<string,string> | undefined, body: m.body as string | undefined, jsonPath: m.jsonPath as string | undefined, jsonExpected: m.jsonExpected as string | undefined };
 }
 
 export function loadMonitors(file = 'monitors.json'): MonitorConfig[] {
