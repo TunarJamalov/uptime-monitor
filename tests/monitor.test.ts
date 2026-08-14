@@ -5,6 +5,7 @@ import { checkDomain } from '../src/domain.js';
 import { validateMonitor } from '../src/config.js';
 import { cleanup, evaluateHeartbeats, getMonitor, incidents, logNotification, notificationHistory, openDatabase, receiveHeartbeat, recordCheck, recordDomainResult, saveMonitor, setMaintenance, syncMonitors, uptime } from '../src/db.js';
 import { createServer } from '../src/server.js';
+import { notify } from '../src/notify.js';
 import type Database from 'better-sqlite3';
 
 const monitor = { id:'monitor-1', name:'Test', url:'https://example.com', interval:60, timeout:1000, expectedStatus:200 };
@@ -66,4 +67,5 @@ describe('domain monitors', () => {
 
 describe('notification policy', () => {
   it('persists per-monitor policy and notification history', () => { db=openDatabase(':memory:'); const saved=saveMonitor(db,{...monitor,failureThreshold:3,recoveryNotifications:false,repeatNotificationMinutes:30,notificationsEnabled:true}); expect(getMonitor(db,saved.id)).toMatchObject({failureThreshold:3,recoveryNotifications:false,repeatNotificationMinutes:30}); logNotification(db,saved.id,7,'DOWN','discord',false,'webhook failed',123); expect(notificationHistory(db,saved.id)[0]).toMatchObject({eventType:'DOWN',provider:'discord',success:0,error:'webhook failed'}); });
+  it('rejects private generic webhook targets without throwing', async () => { const result=await notify('generic','http://127.0.0.1:9999/hook','DOWN',{...monitor,type:'http',state:'UP',outageStarted:null,consecutiveFailures:0,createdAt:0,sslValid:null,sslExpiresAt:null,sslDaysRemaining:null,domainExpirationDate:null,domainDaysRemaining:null,warningAlerted:false,maintenance:false,slowAlerted:false,sslAlerted:false,heartbeatToken:undefined,lastHeartbeatAt:null,failureThreshold:2,recoveryNotifications:true,repeatNotificationMinutes:0,notificationsEnabled:true} as any,'test'); expect(result.success).toBe(false); expect(result.error).toContain('private'); });
 });

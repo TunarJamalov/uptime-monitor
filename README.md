@@ -16,6 +16,7 @@ This project is a self-hosted alternative to a hosted service such as UptimeRobo
 - HTTPS certificate validity, expiration date, and remaining days
 - Discord, Slack, and Telegram-compatible webhook notifications
 - Optional SMTP email notifications
+- Generic JSON webhook notifications with custom headers and timeout handling
 - Heartbeat/Cron monitoring with generated private URLs
 - Domain registration expiration monitoring through real WHOIS lookups
 - UDP request/response monitoring with timeout and optional payload matching
@@ -157,6 +158,8 @@ When the application starts with an empty database, it imports this file into SQ
 | `MONITORS_FILE` | `monitors.json` | Initial import file |
 | `WEBHOOK_PROVIDER` | `discord` | `discord`, `slack`, or `telegram` |
 | `WEBHOOK_URL` | empty | Notification endpoint; empty disables notifications |
+| `WEBHOOK_HEADERS_JSON` | `{}` | Custom JSON object of headers for generic webhooks |
+| `WEBHOOK_TIMEOUT_MS` | `10000` | Generic webhook request timeout |
 | `ADMIN_USERNAME` | empty | Optional Basic Auth username for the dashboard and admin API |
 | `ADMIN_PASSWORD` | empty | Optional Basic Auth password for the dashboard and admin API |
 | `SSL_EXPIRY_DAYS` | `30` | Notify once when an HTTPS certificate enters this expiry window |
@@ -170,6 +173,17 @@ When the application starts with an empty database, it imports this file into SQ
 Use `.env.example` as a starting point. Never log or commit the secret webhook URL.
 
 When both `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set, `/dashboard` and `/api/admin/*` require HTTP Basic Authentication. `/status` and `/api/status` remain public. Set both values in production; leaving them empty is intended only for a trusted local installation.
+
+Set `WEBHOOK_PROVIDER=generic` to send the standard JSON payload to `WEBHOOK_URL`:
+
+```env
+WEBHOOK_PROVIDER=generic
+WEBHOOK_URL=https://hooks.example.com/uptime
+WEBHOOK_HEADERS_JSON={"X-API-Key":"replace-me"}
+WEBHOOK_TIMEOUT_MS=10000
+```
+
+Generic webhook requests always use `POST` and include `event`, `monitor`, `status`, `timestamp`, and `message`. Only 2xx responses are successful. Invalid URLs, localhost/private-network targets, credentials in URLs, redirects, timeouts, and non-2xx responses are recorded as failed notification attempts. Secrets are not included in logs.
 
 ## Notifications
 
