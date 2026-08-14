@@ -1,0 +1,19 @@
+[Unit]
+Description=Self-hosted uptime monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=uptime
+Group=uptime
+WorkingDirectory=/opt/uptime-monitor
+ExecStart=/usr/bin/node /opt/uptime-monitor/dist/index.js
+Restart=on-failure
+RestartSec=5
+Environment=NODE_ENV=production
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

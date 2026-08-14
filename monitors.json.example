@@ -1,0 +1,11 @@
+[
+  {
+    "name": "My Website",
+    "url": "https://example.com",
+    "interval": 60,
+    "timeout": 10000,
+    "expectedStatus": 200,
+    "maxLatency": 1000,
+    "keyword": "Welcome"
+  }
+]
