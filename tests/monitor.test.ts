@@ -43,6 +43,7 @@ describe('admin to public persistence flow', () => {
 
 describe('heartbeat monitors', () => {
   it('defaults heartbeat timing when an existing monitor is changed to heartbeat', () => { const monitor=validateMonitor({name:'Existing',url:'heartbeat://pending',type:'heartbeat',interval:5,timeout:1000,expectedStatus:200,expectedInterval:0},'heartbeat-edit'); expect(monitor.expectedInterval).toBe(60); expect(monitor.gracePeriod).toBe(0); });
+  it('also treats empty or null form values as empty heartbeat timing', () => { expect(validateMonitor({name:'Empty',url:'heartbeat://pending',type:'heartbeat',interval:5,timeout:1000,expectedInterval:'',gracePeriod:0},'heartbeat-empty').expectedInterval).toBe(60); expect(validateMonitor({name:'Null',url:'heartbeat://pending',type:'heartbeat',interval:5,timeout:1000,expectedInterval:null},'heartbeat-null').expectedInterval).toBe(60); });
   it('generates a private token, detects a missed heartbeat, and recovers', () => {
     db=openDatabase(':memory:');
     const heartbeat={id:'heartbeat-1',name:'Cron',url:'heartbeat://pending',type:'heartbeat' as const,group:'Jobs',interval:5,timeout:1000,expectedStatus:200,expectedInterval:60,gracePeriod:10,active:true};
