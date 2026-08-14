@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import dgram from 'node:dgram';
 import { checkMonitor } from '../src/check.js';
 import { checkDomain } from '../src/domain.js';
 import { validateMonitor } from '../src/config.js';
@@ -15,6 +16,7 @@ describe('checks', () => {
   it('rejects unexpected status and keyword mismatch', async () => { expect((await checkMonitor(monitor,async()=>new Response('',{status:503}))).error).toContain('Expected HTTP 200'); expect((await checkMonitor({...monitor,keyword:'needle'},async()=>new Response('nope',{status:200}))).error).toContain('Keyword'); });
   it('marks a successful response as slow without making it DOWN', async () => { const result=await checkMonitor({...monitor,maxLatency:1},async()=>{await new Promise(r=>setTimeout(r,5));return new Response('',{status:200});}); expect(result.status).toBe('UP'); expect(result.slow).toBe(true); });
   it('handles timeout and network errors', async () => { const timeout=checkMonitor(monitor,()=>new Promise((_,reject)=>setTimeout(()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'})),5)) as Promise<Response>); expect((await timeout).error).toContain('timed out'); expect((await checkMonitor(monitor,async()=>{throw new Error('DNS failure')})).error).toBe('DNS failure'); });
+  it('performs a real UDP request and validates the response', async () => { const socket=dgram.createSocket('udp4'); socket.on('message',(message,remote)=>socket.send('pong',remote.port,remote.address)); await new Promise<void>(resolve=>socket.bind(0,'127.0.0.1',()=>resolve())); const port=(socket.address() as any).port; const result=await checkMonitor({id:'udp',name:'UDP',url:`udp://127.0.0.1:${port}`,type:'udp',interval:60,timeout:1000,expectedStatus:200,udpPayload:'ping',udpExpectedResponse:'pong'},fetch); expect(result.status).toBe('UP'); socket.close(); });
 });
 
 describe('state and history', () => {

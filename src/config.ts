@@ -1,6 +1,6 @@
 import fs from 'node:fs';
-export type MonitorType = 'http' | 'tcp' | 'dns' | 'ping' | 'websocket' | 'ssl' | 'heartbeat' | 'domain';
-export interface MonitorConfig { id: string; name: string; url: string; type?: MonitorType; group?: string; interval: number; timeout: number; expectedStatus: number; expectedInterval?: number; gracePeriod?: number; warningThreshold?: number; keyword?: string; maxLatency?: number; active?: boolean; method?: string; headers?: Record<string,string>; body?: string; jsonPath?: string; jsonExpected?: string }
+export type MonitorType = 'http' | 'tcp' | 'dns' | 'ping' | 'websocket' | 'ssl' | 'heartbeat' | 'domain' | 'udp';
+export interface MonitorConfig { id: string; name: string; url: string; type?: MonitorType; group?: string; interval: number; timeout: number; expectedStatus: number; expectedInterval?: number; gracePeriod?: number; warningThreshold?: number; udpPayload?: string; udpExpectedResponse?: string; keyword?: string; maxLatency?: number; active?: boolean; method?: string; headers?: Record<string,string>; body?: string; jsonPath?: string; jsonExpected?: string }
 
 export function validateMonitor(raw: unknown, id: string, label = 'Monitor'): MonitorConfig {
   if (!raw || typeof raw !== 'object') throw new Error(`${label} must be an object`);
@@ -9,8 +9,9 @@ export function validateMonitor(raw: unknown, id: string, label = 'Monitor'): Mo
   if (typeof m.url !== 'string') throw new Error(`${label}: url is required`);
   let url: URL;
   try { url = new URL(m.url); } catch { if (m.type === 'domain' && typeof m.url === 'string') url = new URL(`domain://${m.url}`); else throw new Error(`${label}: url is invalid`); }
-  const type = (m.type as MonitorType | undefined) ?? ({'tcp:':'tcp','dns:':'dns','ping:':'ping','ws:':'websocket','wss:':'websocket'} as Record<string,MonitorType>)[url.protocol] ?? 'http';
-  if (!['http','tcp','dns','ping','websocket','ssl','heartbeat','domain'].includes(type)) throw new Error(`${label}: unsupported monitor type`);
+  const inferredType=({'tcp:':'tcp','dns:':'dns','ping:':'ping','ws:':'websocket','wss:':'websocket','udp:':'udp'} as Record<string,MonitorType>)[url.protocol];
+  const type = (m.type === 'http' && inferredType ? inferredType : (m.type as MonitorType | undefined) ?? inferredType ?? 'http');
+  if (!['http','tcp','dns','ping','websocket','ssl','heartbeat','domain','udp'].includes(type)) throw new Error(`${label}: unsupported monitor type`);
   const heartbeatInterval = m.expectedInterval == null || m.expectedInterval === '' || m.expectedInterval === 0 ? 60 : m.expectedInterval;
   if (type === 'heartbeat') {
     if (typeof heartbeatInterval !== 'number' || !Number.isFinite(heartbeatInterval) || heartbeatInterval < 1) throw new Error(`${label}: expectedInterval must be at least 1 second`);
@@ -20,13 +21,19 @@ export function validateMonitor(raw: unknown, id: string, label = 'Monitor'): Mo
     if (!url.hostname || !/^[a-z0-9.-]+$/i.test(url.hostname) || !url.hostname.includes('.')) throw new Error(`${label}: domain is invalid`);
     if (m.warningThreshold !== undefined && (![7,14,30].includes(Number(m.warningThreshold)))) throw new Error(`${label}: warningThreshold must be 7, 14, or 30 days`);
   }
+  if (type === 'udp') {
+    if (url.protocol !== 'udp:' || !url.hostname || !url.port) throw new Error(`${label}: UDP monitors require udp://host:port`);
+    const port=Number(url.port); if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`${label}: UDP port must be between 1 and 65535`);
+    if (m.udpPayload !== undefined && typeof m.udpPayload !== 'string') throw new Error(`${label}: udpPayload must be a string`);
+    if (m.udpExpectedResponse !== undefined && typeof m.udpExpectedResponse !== 'string') throw new Error(`${label}: udpExpectedResponse must be a string`);
+  }
   if (type === 'http' || type === 'ssl') { if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`${label}: HTTP/SSL monitors require HTTP or HTTPS URLs`); }
-  else if (type === 'heartbeat' || type === 'domain') { /* These types use their own lookup flow. */ }
+  else if (type === 'heartbeat' || type === 'domain' || type === 'udp') { /* These types use their own lookup flow. */ }
   else if (type === 'websocket') { if (!['ws:','wss:'].includes(url.protocol)) throw new Error(`${label}: websocket monitors require ws or wss URLs`); }
   else if (!['tcp:','dns:','ping:'].includes(url.protocol)) throw new Error(`${label}: ${type} monitors require a ${type}:// URL`);
   for (const key of ['interval', 'timeout']) if (typeof m[key] !== 'number' || !Number.isFinite(m[key])) throw new Error(`${label}: ${key} must be a number`);
-  if (!['heartbeat','domain'].includes(type) && (typeof m.expectedStatus !== 'number' || !Number.isFinite(m.expectedStatus))) throw new Error(`${label}: expectedStatus must be a number`);
-  if ((m.interval as number) < 5 || (m.timeout as number) < 100 || (!['heartbeat','domain'].includes(type) && ((m.expectedStatus as number) < 100 || (m.expectedStatus as number) > 599))) throw new Error(`${label}: interval, timeout or expectedStatus is out of range`);
+  if (!['heartbeat','domain','udp'].includes(type) && (typeof m.expectedStatus !== 'number' || !Number.isFinite(m.expectedStatus))) throw new Error(`${label}: expectedStatus must be a number`);
+  if ((m.interval as number) < 5 || (m.timeout as number) < 100 || (!['heartbeat','domain','udp'].includes(type) && ((m.expectedStatus as number) < 100 || (m.expectedStatus as number) > 599))) throw new Error(`${label}: interval, timeout or expectedStatus is out of range`);
   if (m.keyword !== undefined && typeof m.keyword !== 'string') throw new Error(`${label}: keyword must be a string`);
   if (m.maxLatency !== undefined && (typeof m.maxLatency !== 'number' || m.maxLatency < 1)) throw new Error(`${label}: maxLatency must be a positive number`);
   if (m.method !== undefined && (typeof m.method !== 'string' || !['GET','POST','PUT','PATCH','HEAD'].includes(m.method.toUpperCase()))) throw new Error(`${label}: method must be GET, POST, PUT, PATCH, or HEAD`);
@@ -34,7 +41,7 @@ export function validateMonitor(raw: unknown, id: string, label = 'Monitor'): Mo
   if (m.body !== undefined && typeof m.body !== 'string') throw new Error(`${label}: body must be a string`);
   if (m.jsonPath !== undefined && typeof m.jsonPath !== 'string') throw new Error(`${label}: jsonPath must be a string`);
   if (m.jsonExpected !== undefined && typeof m.jsonExpected !== 'string') throw new Error(`${label}: jsonExpected must be a string`);
-  return { id, name: m.name.trim(), url: type === 'domain' ? url.hostname : url.toString(), type, group: typeof m.group === 'string' ? m.group.trim() : undefined, interval: m.interval as number, timeout: m.timeout as number, expectedStatus: (m.expectedStatus as number | undefined) ?? 200, expectedInterval: type === 'heartbeat' ? heartbeatInterval as number : undefined, gracePeriod: type === 'heartbeat' ? (m.gracePeriod as number | undefined) ?? 0 : undefined, warningThreshold: type === 'domain' ? Number(m.warningThreshold ?? 30) : undefined, keyword: m.keyword as string | undefined, maxLatency: m.maxLatency as number | undefined, active: m.active !== false, method: (m.method as string | undefined)?.toUpperCase() ?? 'GET', headers: m.headers as Record<string,string> | undefined, body: m.body as string | undefined, jsonPath: m.jsonPath as string | undefined, jsonExpected: m.jsonExpected as string | undefined };
+  return { id, name: m.name.trim(), url: type === 'domain' ? url.hostname : url.toString(), type, group: typeof m.group === 'string' ? m.group.trim() : undefined, interval: m.interval as number, timeout: m.timeout as number, expectedStatus: (m.expectedStatus as number | undefined) ?? 200, expectedInterval: type === 'heartbeat' ? heartbeatInterval as number : undefined, gracePeriod: type === 'heartbeat' ? (m.gracePeriod as number | undefined) ?? 0 : undefined, warningThreshold: type === 'domain' ? Number(m.warningThreshold ?? 30) : undefined, udpPayload: type === 'udp' ? (m.udpPayload as string | undefined) ?? (m.body as string | undefined) : undefined, udpExpectedResponse: type === 'udp' ? (m.udpExpectedResponse as string | undefined) ?? (m.jsonExpected as string | undefined) : undefined, keyword: m.keyword as string | undefined, maxLatency: m.maxLatency as number | undefined, active: m.active !== false, method: (m.method as string | undefined)?.toUpperCase() ?? 'GET', headers: m.headers as Record<string,string> | undefined, body: m.body as string | undefined, jsonPath: m.jsonPath as string | undefined, jsonExpected: m.jsonExpected as string | undefined };
 }
 
 export function loadMonitors(file = 'monitors.json'): MonitorConfig[] {

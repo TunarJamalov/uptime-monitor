@@ -18,6 +18,7 @@ This project is a self-hosted alternative to a hosted service such as UptimeRobo
 - Optional SMTP email notifications
 - Heartbeat/Cron monitoring with generated private URLs
 - Domain registration expiration monitoring through real WHOIS lookups
+- UDP request/response monitoring with timeout and optional payload matching
 - Shareable, read-only `/status` page
 - Automatic 90-day history and incident retention
 - systemd and journald support
@@ -63,6 +64,25 @@ The dashboard form supports these fields:
 - `jsonPath`, `jsonExpected`: Optional dot-path response JSON assertion.
 
 Non-HTTP examples use URL schemes such as `tcp://db.example.com:5432`, `dns://example.com`, `ping://example.com`, and `wss://example.com/socket`.
+
+## UDP Monitoring
+
+Create a UDP monitor with a URL such as `udp://example.com:53`. The checker uses Node.js `dgram` networking, sends the optional `udpPayload`, waits up to the configured timeout for a response, and optionally compares the response text with `udpExpectedResponse`.
+
+```json
+{
+  "name": "DNS UDP",
+  "url": "udp://example.com:53",
+  "type": "udp",
+  "interval": 60,
+  "timeout": 5000,
+  "udpPayload": "ping",
+  "udpExpectedResponse": "pong",
+  "group": "Network"
+}
+```
+
+UDP has no universal connection handshake. A monitor without a payload still sends an empty datagram and requires a response; services that do not respond to empty datagrams will correctly time out. UDP failures use the normal two-failure DOWN, incident, notification, and recovery flow.
 
 ## Domain Expiration Monitoring
 
