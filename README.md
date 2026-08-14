@@ -19,6 +19,7 @@ This project is a self-hosted alternative to a hosted service such as UptimeRobo
 - Heartbeat/Cron monitoring with generated private URLs
 - Domain registration expiration monitoring through real WHOIS lookups
 - UDP request/response monitoring with timeout and optional payload matching
+- Per-monitor notification thresholds, recovery preferences, repeat alerts, and notification history
 - Shareable, read-only `/status` page
 - Automatic 90-day history and incident retention
 - systemd and journald support
@@ -83,6 +84,21 @@ Create a UDP monitor with a URL such as `udp://example.com:53`. The checker uses
 ```
 
 UDP has no universal connection handshake. A monitor without a payload still sends an empty datagram and requires a response; services that do not respond to empty datagrams will correctly time out. UDP failures use the normal two-failure DOWN, incident, notification, and recovery flow.
+
+## Notification Policy
+
+Notification policy is stored per monitor in SQLite and can also be supplied in monitor configuration/API payloads:
+
+```json
+{
+  "failureThreshold": 2,
+  "notificationsEnabled": true,
+  "recoveryNotifications": true,
+  "repeatNotificationMinutes": 30
+}
+```
+
+`failureThreshold` controls how many consecutive failures create a DOWN notification. `repeatNotificationMinutes` sends `STILL_DOWN` notifications for an open incident; `0` disables repeats. Recovery notifications can be disabled independently. Each webhook and SMTP attempt is stored in notification history with provider, event, timestamp, success, and error details. Notification failures never stop monitoring.
 
 ## Domain Expiration Monitoring
 

@@ -2,7 +2,7 @@ import express from 'express';
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import { validateMonitor, type MonitorConfig } from './config.js';
-import { backupDatabase, dashboardData, getMonitor, heartbeatUrl, receiveHeartbeat, removeMonitor, saveMonitor, setMaintenance, setMonitorActive } from './db.js';
+import { backupDatabase, dashboardData, getMonitor, heartbeatUrl, notificationHistory, receiveHeartbeat, removeMonitor, saveMonitor, setMaintenance, setMonitorActive, setNotificationConfig } from './db.js';
 import type { CheckResult } from './check.js';
 
 const esc=(v:unknown)=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]!));
