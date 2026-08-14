@@ -16,6 +16,7 @@ This project is a self-hosted alternative to a hosted service such as UptimeRobo
 - HTTPS certificate validity, expiration date, and remaining days
 - Discord, Slack, and Telegram-compatible webhook notifications
 - Optional SMTP email notifications
+- Heartbeat/Cron monitoring with generated private URLs
 - Shareable, read-only `/status` page
 - Automatic 90-day history and incident retention
 - systemd and journald support
@@ -61,6 +62,22 @@ The dashboard form supports these fields:
 - `jsonPath`, `jsonExpected`: Optional dot-path response JSON assertion.
 
 Non-HTTP examples use URL schemes such as `tcp://db.example.com:5432`, `dns://example.com`, `ping://example.com`, and `wss://example.com/socket`.
+
+## Heartbeat / Cron Monitoring
+
+Create a monitor with type `heartbeat` in the dashboard. Set the expected interval and grace period in seconds. The dashboard generates a private URL such as:
+
+```text
+POST /api/heartbeat/<TOKEN>
+```
+
+Do not publish this URL. Add it to a cron job, deployment hook, or scheduled task:
+
+```cron
+*/5 * * * * curl -fsS -X POST https://monitor.example.com/api/heartbeat/TOKEN >/dev/null
+```
+
+The monitor is considered healthy when a heartbeat arrives. If no heartbeat arrives within `expected interval + grace period`, it becomes DOWN and uses the existing incident and notification system. The next heartbeat changes it to RECOVERED and closes the incident. Tokens are stored in SQLite, are not logged, and are excluded from the public status page.
 
 Disabling a monitor preserves its history but stops new checks. Deleting a monitor also deletes its check and incident history.
 

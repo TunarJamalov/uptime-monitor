@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkMonitor } from '../src/check.js';
-import { cleanup, getMonitor, incidents, openDatabase, recordCheck, setMaintenance, syncMonitors, uptime } from '../src/db.js';
+import { cleanup, evaluateHeartbeats, getMonitor, incidents, openDatabase, receiveHeartbeat, recordCheck, saveMonitor, setMaintenance, syncMonitors, uptime } from '../src/db.js';
 import { createServer } from '../src/server.js';
 import type Database from 'better-sqlite3';
 
@@ -37,5 +37,19 @@ describe('admin to public persistence flow', () => {
     const dashboardHtml=await (await fetch(`http://127.0.0.1:${port}/dashboard`)).text();
     const dashboardScript=dashboardHtml.match(/<script>([\s\S]*)<\/script>/)?.[1]; expect(dashboardScript).toBeTruthy(); expect(() => new Function(dashboardScript!)).not.toThrow();
     server.close();
+  });
+});
+
+describe('heartbeat monitors', () => {
+  it('generates a private token, detects a missed heartbeat, and recovers', () => {
+    db=openDatabase(':memory:');
+    const heartbeat={id:'heartbeat-1',name:'Cron',url:'heartbeat://pending',type:'heartbeat' as const,group:'Jobs',interval:5,timeout:1000,expectedStatus:200,expectedInterval:60,gracePeriod:10,active:true};
+    const saved=saveMonitor(db,heartbeat); expect(saved.heartbeatToken).toBeTruthy();
+    const missedAt=saved.createdAt+(saved.expectedInterval!+saved.gracePeriod!)*1000+1;
+    expect(evaluateHeartbeats(db,missedAt)).toHaveLength(1); expect(getMonitor(db,saved.id)?.state).toBe('DOWN'); expect(incidents(db,saved.id)[0].error).toContain('Heartbeat');
+    const received=receiveHeartbeat(db,saved.heartbeatToken!,missedAt+1000); expect(received?.recovered).toBe(true); expect(getMonitor(db,saved.id)?.state).toBe('UP'); expect(getMonitor(db,saved.id)?.lastHeartbeatAt).toBe(missedAt+1000); expect(incidents(db,saved.id)[0].recoveredAt).toBe(missedAt+1000);
+  });
+  it('accepts POST heartbeat requests without exposing the token publicly', async () => {
+    db=openDatabase(':memory:'); const heartbeat={id:'heartbeat-2',name:'Deploy job',url:'heartbeat://pending',type:'heartbeat' as const,interval:5,timeout:1000,expectedStatus:200,expectedInterval:60,gracePeriod:10,active:true}; const saved=saveMonitor(db,heartbeat); const app=createServer(db,()=>{},async()=>({status:'UP',latency:1})); const server=app.listen(0); await new Promise<void>(resolve=>server.once('listening',()=>resolve())); const port=(server.address() as any).port; const response=await fetch(`http://127.0.0.1:${port}/api/heartbeat/${saved.heartbeatToken}`,{method:'POST'}); expect(response.status).toBe(200); const publicJson=await (await fetch(`http://127.0.0.1:${port}/api/status`)).text(); expect(publicJson).not.toContain(saved.heartbeatToken!); server.close();
   });
 });
