@@ -160,8 +160,9 @@ When the application starts with an empty database, it imports this file into SQ
 | `WEBHOOK_URL` | empty | Notification endpoint; empty disables notifications |
 | `WEBHOOK_HEADERS_JSON` | `{}` | Custom JSON object of headers for generic webhooks |
 | `WEBHOOK_TIMEOUT_MS` | `10000` | Generic webhook request timeout |
-| `ADMIN_USERNAME` | empty | Optional Basic Auth username for the dashboard and admin API |
-| `ADMIN_PASSWORD` | empty | Optional Basic Auth password for the dashboard and admin API |
+| `ADMIN_USERNAME` | empty | Basic Auth username used for the first authentication factor |
+| `ADMIN_PASSWORD` | empty | Basic Auth password used for the first authentication factor |
+| `AUTH_ENCRYPTION_KEY` | empty | Required with admin credentials; key material used to encrypt the TOTP secret |
 | `SSL_EXPIRY_DAYS` | `30` | Notify once when an HTTPS certificate enters this expiry window |
 | `BACKUP_DIR` | `./data/backups` | Directory for daily SQLite backups; empty disables automatic backups |
 | `SMTP_HOST` | empty | SMTP server for email alerts |
@@ -172,7 +173,7 @@ When the application starts with an empty database, it imports this file into SQ
 
 Use `.env.example` as a starting point. Never log or commit the secret webhook URL.
 
-When both `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set, `/dashboard` and `/api/admin/*` require HTTP Basic Authentication. `/status` and `/api/status` remain public. Set both values in production; leaving them empty is intended only for a trusted local installation.
+When both `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set, `/dashboard` and `/api/admin/*` require a session created by Basic Auth plus TOTP (or a one-time recovery code). `/status`, `/api/status`, and heartbeat URLs remain public. Set `AUTH_ENCRYPTION_KEY` to a high-entropy secret and keep it backed up separately; changing it makes stored TOTP credentials unusable. Visit `/api/auth/setup` with Basic Auth once to obtain a secret and recovery codes, then configure the authenticator before signing in at `/login`.
 
 Set `WEBHOOK_PROVIDER=generic` to send the standard JSON payload to `WEBHOOK_URL`:
 

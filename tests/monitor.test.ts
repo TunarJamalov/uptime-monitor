@@ -7,6 +7,7 @@ import { cleanup, evaluateHeartbeats, getMonitor, incidents, logNotification, no
 import { createServer } from '../src/server.js';
 import { notify } from '../src/notify.js';
 import type Database from 'better-sqlite3';
+import { randomTotpSetup, saveTotp, verifyTotp } from '../src/auth.js';
 
 const monitor = { id:'monitor-1', name:'Test', url:'https://example.com', interval:60, timeout:1000, expectedStatus:200 };
 let db: Database.Database;
@@ -26,6 +27,19 @@ describe('state and history', () => {
   it('persists maintenance mode without changing monitor history', () => { db=openDatabase(':memory:'); syncMonitors(db,[monitor]); expect(setMaintenance(db,monitor.id,true)?.maintenance).toBe(true); expect(getMonitor(db,monitor.id)?.maintenance).toBe(true); expect(setMaintenance(db,monitor.id,false)?.maintenance).toBe(false); });
 });
 
+describe('authentication storage', () => {
+  it('encrypts TOTP data and consumes recovery codes once', () => {
+    const previous = process.env.AUTH_ENCRYPTION_KEY;
+    process.env.AUTH_ENCRYPTION_KEY = 'test-encryption-key';
+    db = openDatabase(':memory:');
+    const setup = randomTotpSetup();
+    saveTotp(db, setup.secret, setup.codes);
+    expect(verifyTotp(db, setup.codes[0])).toBe(true);
+    expect(verifyTotp(db, setup.codes[0])).toBe(false);
+    if (previous === undefined) delete process.env.AUTH_ENCRYPTION_KEY; else process.env.AUTH_ENCRYPTION_KEY = previous;
+  });
+});
+
 describe('admin to public persistence flow', () => {
   it('persists a created monitor and serves it from the public database query', async () => {
     db=openDatabase(':memory:');
@@ -42,6 +56,35 @@ describe('admin to public persistence flow', () => {
     const dashboardHtml=await (await fetch(`http://127.0.0.1:${port}/dashboard`)).text();
     const dashboardScript=dashboardHtml.match(/<script>([\s\S]*)<\/script>/)?.[1]; expect(dashboardScript).toBeTruthy(); expect(() => new Function(dashboardScript!)).not.toThrow();
     server.close();
+  });
+});
+
+describe('session authentication integration', () => {
+  const basic = () => 'Basic ' + Buffer.from('admin:correct-password').toString('base64');
+  const cookies = (response: Response) => response.headers.getSetCookie().map(value => value.split(';', 1)[0]).join('; ');
+  const csrf = (value: string) => value.match(/(?:^|; )csrf=([^;]+)/)?.[1] ?? '';
+  let server: ReturnType<typeof appListen>;
+  function appListen(app: ReturnType<typeof createServer>) { const http = app.listen(0); return http; }
+  afterEach(() => { server?.close(); delete process.env.ADMIN_USERNAME; delete process.env.ADMIN_PASSWORD; delete process.env.AUTH_ENCRYPTION_KEY; });
+
+  it('supports disabled-TOTP login, public routes, CSRF, logout, and expiry', async () => {
+    process.env.ADMIN_USERNAME = 'admin'; process.env.ADMIN_PASSWORD = 'correct-password'; process.env.AUTH_ENCRYPTION_KEY = 'a'.repeat(40);
+    db = openDatabase(':memory:'); const app = createServer(db, () => {}, async () => ({ status: 'UP', latency: 1 })); server = appListen(app); await new Promise<void>(resolve => server.once('listening', resolve)); const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    expect((await fetch(`${base}/api/status`)).status).toBe(200); expect((await fetch(`${base}/api/admin/monitors`)).status).toBe(401);
+    const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: '{}' }); expect(login.status).toBe(200); const jar = cookies(login); const token = csrf(jar);
+    expect((await fetch(`${base}/api/admin/monitors`, { headers: { Cookie: jar } })).status).toBe(200);
+    expect((await fetch(`${base}/api/admin/monitors`, { method: 'POST', headers: { Cookie: jar, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'blocked', url: 'https://example.com', interval: 60, timeout: 1000, expectedStatus: 200 }) })).status).toBe(403);
+    const logout = await fetch(`${base}/api/auth/logout`, { method: 'POST', headers: { Cookie: jar, 'x-csrf-token': token } }); expect(logout.status).toBe(200);
+    const second = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: '{}' }); const expiredJar = cookies(second); db.prepare('UPDATE auth_sessions SET expires_at=0').run(); expect((await fetch(`${base}/api/admin/monitors`, { headers: { Cookie: expiredJar } })).status).toBe(401);
+  });
+
+  it('enrolls TOTP with a real QR data URL and accepts a one-time recovery code', async () => {
+    process.env.ADMIN_USERNAME = 'admin'; process.env.ADMIN_PASSWORD = 'correct-password'; process.env.AUTH_ENCRYPTION_KEY = 'a'.repeat(40);
+    db = openDatabase(':memory:'); const app = createServer(db, () => {}, async () => ({ status: 'UP', latency: 1 })); server = appListen(app); await new Promise<void>(resolve => server.once('listening', resolve)); const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    const setup = await (await fetch(`${base}/api/auth/setup`, { headers: { Authorization: basic() } })).json(); expect(setup.qrDataUrl).toMatch(/^data:image\/png;base64,/); expect(setup.otpauth).toContain('otpauth://totp/');
+    expect((await fetch(`${base}/api/auth/setup`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: JSON.stringify({ secret: setup.secret, recoveryCodes: setup.recoveryCodes, code: setup.recoveryCodes[0] }) })).status).toBe(200);
+    const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: JSON.stringify({ code: setup.recoveryCodes[1] }) }); expect(login.status).toBe(200); expect((await fetch(`${base}/api/admin/security`, { headers: { Cookie: cookies(login) } })).status).toBe(200);
+    expect((await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: JSON.stringify({ code: setup.recoveryCodes[1] }) })).status).toBe(401);
   });
 });
 

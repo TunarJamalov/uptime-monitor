@@ -15,6 +15,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "nodemailer": "^9.0.5",
+    "qrcode": "^1.5.4",
     "whois-json": "^2.0.4"
   },
   "devDependencies": {
@@ -22,6 +23,7 @@
     "@types/express": "^5.0.0",
     "@types/node": "^22.10.5",
     "@types/nodemailer": "^6.4.24",
+    "@types/qrcode": "^1.5.6",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
