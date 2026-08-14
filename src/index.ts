@@ -1,7 +1,8 @@
 import 'dotenv/config';
 import { loadMonitors, type MonitorConfig } from './config.js';
 import { checkMonitor, type CheckResult } from './check.js';
-import { backupDatabase, cleanup, evaluateHeartbeats, getMonitor, listMonitors, monitorCount, openDatabase, recordCheck, syncMonitors } from './db.js';
+import { checkDomain } from './domain.js';
+import { backupDatabase, cleanup, evaluateHeartbeats, getMonitor, listMonitors, monitorCount, openDatabase, recordCheck, recordDomainResult, setDomainConfig, syncMonitors } from './db.js';
 import { emailNotify, notify } from './notify.js';
 import { createServer } from './server.js';
 
@@ -12,6 +13,7 @@ function formatDuration(ms:number) { const minutes=Math.floor(ms/60000); const h
 async function notifyHeartbeat(event:'DOWN'|'RECOVERED', monitor: any, started: number|null) { const details=event==='DOWN'?`Error: Heartbeat missed\nOutage started: ${new Date(started ?? Date.now()).toISOString()}`:`Outage duration: ${formatDuration(Date.now()-(started ?? Date.now()))}\nRecovered: ${new Date().toISOString()}`; await Promise.all([notify(process.env.WEBHOOK_PROVIDER,process.env.WEBHOOK_URL,event,monitor,details),emailNotify(event,monitor,details)]); }
 export async function runMonitor(monitor: MonitorConfig): Promise<CheckResult> {
   const current=getMonitor(db,monitor.id); if (current?.maintenance) return {status:'UP',latency:0};
+  if (monitor.type==='domain') { const domain=await checkDomain(monitor); const transition=recordDomainResult(db,monitor,domain); const row=getMonitor(db,monitor.id)!; if(transition.transitionedDown){const details=`Error: ${domain.error}\nDomain check failed: ${new Date().toISOString()}`;await Promise.all([notify(process.env.WEBHOOK_PROVIDER,process.env.WEBHOOK_URL,'DOWN',row,details),emailNotify('DOWN',row,details)]);} if(transition.recovered){const details=`Domain check recovered: ${new Date().toISOString()}`;await Promise.all([notify(process.env.WEBHOOK_PROVIDER,process.env.WEBHOOK_URL,'RECOVERED',row,details),emailNotify('RECOVERED',row,details)]);} if(transition.warning){const details=`Domain ${row.url} expires in ${domain.daysRemaining} days`;await Promise.all([notify(process.env.WEBHOOK_PROVIDER,process.env.WEBHOOK_URL,'DOMAIN_EXPIRING',row,details),emailNotify('DOMAIN_EXPIRING',row,details)]);} return {status:domain.status,latency:0,error:domain.error}; }
   const result=await checkMonitor(monitor); const transition=recordCheck(db,monitor,result); const row=getMonitor(db,monitor.id)!;
   if (transition.transitionedDown) { const details=`Error: ${result.error}\nOutage started: ${new Date(row.outageStarted!).toISOString()}`; await Promise.all([notify(process.env.WEBHOOK_PROVIDER,process.env.WEBHOOK_URL,'DOWN',row,details),emailNotify('DOWN',row,details)]); }
   if (transition.recovered) { const details=`Outage duration: ${formatDuration(Date.now()-(transition.outageStarted ?? Date.now()))}\nRecovered: ${new Date().toISOString()}`; await Promise.all([notify(process.env.WEBHOOK_PROVIDER,process.env.WEBHOOK_URL,'RECOVERED',row,details),emailNotify('RECOVERED',row,details)]); }

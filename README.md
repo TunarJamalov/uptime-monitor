@@ -17,6 +17,7 @@ This project is a self-hosted alternative to a hosted service such as UptimeRobo
 - Discord, Slack, and Telegram-compatible webhook notifications
 - Optional SMTP email notifications
 - Heartbeat/Cron monitoring with generated private URLs
+- Domain registration expiration monitoring through real WHOIS lookups
 - Shareable, read-only `/status` page
 - Automatic 90-day history and incident retention
 - systemd and journald support
@@ -62,6 +63,14 @@ The dashboard form supports these fields:
 - `jsonPath`, `jsonExpected`: Optional dot-path response JSON assertion.
 
 Non-HTTP examples use URL schemes such as `tcp://db.example.com:5432`, `dns://example.com`, `ping://example.com`, and `wss://example.com/socket`.
+
+## Domain Expiration Monitoring
+
+Create a monitor with type `domain` and enter a domain such as `example.com`. The service performs a real WHOIS lookup, stores the registration expiration date in SQLite, and displays the expiration date and days remaining in the dashboard/API. SSL certificate expiration is a separate feature and is not used for domain registration data.
+
+The warning threshold can be `30`, `14`, or `7` days. When the domain enters the selected window, the existing webhook and optional SMTP notification system sends a `DOMAIN_EXPIRING` alert once for that warning cycle. WHOIS failures are recorded as monitor failures and participate in the normal two-failure incident policy.
+
+WHOIS servers and response formats vary by TLD. A domain without a parseable registration expiration date is reported as a failed domain check rather than being assigned fake data.
 
 ## Heartbeat / Cron Monitoring
 

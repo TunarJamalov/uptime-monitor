@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { checkMonitor } from '../src/check.js';
+import { checkDomain } from '../src/domain.js';
 import { validateMonitor } from '../src/config.js';
-import { cleanup, evaluateHeartbeats, getMonitor, incidents, openDatabase, receiveHeartbeat, recordCheck, saveMonitor, setMaintenance, syncMonitors, uptime } from '../src/db.js';
+import { cleanup, evaluateHeartbeats, getMonitor, incidents, openDatabase, receiveHeartbeat, recordCheck, recordDomainResult, saveMonitor, setMaintenance, syncMonitors, uptime } from '../src/db.js';
 import { createServer } from '../src/server.js';
 import type Database from 'better-sqlite3';
 
@@ -55,4 +56,8 @@ describe('heartbeat monitors', () => {
   it('accepts POST heartbeat requests without exposing the token publicly', async () => {
     db=openDatabase(':memory:'); const heartbeat={id:'heartbeat-2',name:'Deploy job',url:'heartbeat://pending',type:'heartbeat' as const,interval:5,timeout:1000,expectedStatus:200,expectedInterval:60,gracePeriod:10,active:true}; const saved=saveMonitor(db,heartbeat); const app=createServer(db,()=>{},async()=>({status:'UP',latency:1})); const server=app.listen(0); await new Promise<void>(resolve=>server.once('listening',()=>resolve())); const port=(server.address() as any).port; const response=await fetch(`http://127.0.0.1:${port}/api/heartbeat/${saved.heartbeatToken}`,{method:'POST'}); expect(response.status).toBe(200); const publicJson=await (await fetch(`http://127.0.0.1:${port}/api/status`)).text(); expect(publicJson).not.toContain(saved.heartbeatToken!); server.close();
   });
+});
+
+describe('domain monitors', () => {
+  it('parses a real WHOIS-shaped expiration response and records warning state', async () => { const monitor={id:'domain-1',name:'Example',url:'example.com',type:'domain' as const,interval:60,timeout:1000,expectedStatus:200,warningThreshold:30,active:true}; const expiration=Date.now()+14*86400000; const result=await checkDomain(monitor,async()=>({registryExpiryDate:new Date(expiration).toISOString()})); expect(result.status).toBe('UP'); expect(result.warning).toBe(true); db=openDatabase(':memory:'); saveMonitor(db,monitor); const transition=recordDomainResult(db,monitor,result,100); expect(transition.warning).toBe(true); expect(getMonitor(db,monitor.id)?.domainDaysRemaining).toBeGreaterThan(13); });
 });
