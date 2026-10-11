@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'node:fs';
 import { loadMonitors } from './config.js';
 import { checkMonitor, type CheckResult } from './check.js';
 import { checkDomain } from './domain.js';
@@ -24,16 +25,19 @@ import { createServer } from './server.js';
 const db = openDatabase(process.env.DATABASE_PATH ?? './data/uptime.db');
 
 /* ---------- Initial import from monitors.json (only when the database is empty) ---------- */
-try {
-  const imported = loadMonitors(process.env.MONITORS_FILE ?? 'monitors.json');
-  if (!monitorCount(db)) syncMonitors(db, imported);
-} catch (error) {
-  if (!monitorCount(db)) {
-    console.error(error instanceof Error ? error.message : error);
-    db.close();
-    process.exit(1);
+const monitorsFile = process.env.MONITORS_FILE ?? 'monitors.json';
+if (!monitorCount(db)) {
+  if (!fs.existsSync(monitorsFile)) {
+    console.log(`No ${monitorsFile} found; starting without monitors`);
+  } else {
+    try {
+      syncMonitors(db, loadMonitors(monitorsFile));
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : error);
+      db.close();
+      process.exit(1);
+    }
   }
-  console.warn(`Monitor import skipped: ${error instanceof Error ? error.message : error}`);
 }
 
 /* ---------- Notifications ---------- */

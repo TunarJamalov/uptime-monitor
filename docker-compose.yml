@@ -1,0 +1,11 @@
+services:
+  uptime-monitor:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    env_file: .env
+    environment:
+      DATABASE_PATH: /app/data/uptime.db
+    volumes:
+      - ./data:/app/data

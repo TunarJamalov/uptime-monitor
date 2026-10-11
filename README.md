@@ -185,6 +185,15 @@ Never commit `.env`; it is ignored by git.
 
 Checks and incidents older than 90 days are deleted once a day. When `BACKUP_DIR` is set, a copy of the database is written there daily and on demand from the dashboard. Deleting a monitor removes its checks, incidents, and notification history. Pausing a monitor keeps its history.
 
+## Docker
+
+```sh
+cp .env.example .env   # edit it, then:
+docker compose up -d --build
+```
+
+The container stores the database in `./data` and listens on port 3000. The compose file passes `.env` to the container, so `DATABASE_PATH` in `.env` is overridden to the volume path.
+
 ## Production deployment
 
 ```sh
