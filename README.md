@@ -14,7 +14,7 @@ A small, self-hosted alternative to hosted uptime services such as UptimeRobot. 
 - Notification history with provider, event, result, and error
 - Maintenance mode and pause/resume per monitor, optional monitor groups
 - Admin dashboard protected by a password plus optional TOTP two-factor authentication
-- Public, read-only `/status` page and `/api/status` JSON
+- Public, read-only `/status` page and `/api/status` JSON, with announcements for planned maintenance or incident updates
 - JSON and CSV export, daily SQLite backups, 90-day history retention
 - systemd unit for production deployment
 
@@ -50,7 +50,7 @@ Useful scripts:
 | Path | Access | Description |
 | --- | --- | --- |
 | `/status` | Public | Read-only status page, refreshes every minute |
-| `/api/status` | Public | Public JSON: name, type, group, state, uptime, latency history, incidents. Request headers, bodies, payloads, and tokens are never included |
+| `/api/status` | Public | Public JSON: `announcements` plus `monitors` with name, type, group, state, uptime, latency history, incidents. Request headers, bodies, payloads, and tokens are never included |
 | `/api/heartbeat/<token>` | Public (secret URL) | `POST` target for heartbeat monitors |
 | `/healthz` | Public | Liveness check for the process itself |
 | `/login` | Public | Admin sign-in form |
@@ -137,6 +137,8 @@ Webhook requests always use `POST`, follow no redirects, and must answer with a 
 SMTP email is enabled when `SMTP_HOST`, `ALERT_FROM`, and `ALERT_TO` are all set.
 
 ## Public status page
+
+Announcements are managed on the dashboard and shown as banners on `/status`. Each has a kind (`info`, `maintenance`, or `incident`), an optional message, a start time, and an optional end time; only announcements within their window are visible. Use them to announce planned work before switching monitors to maintenance mode, or to post updates during an outage.
 
 `/status` lists active monitors grouped by their group name with state, uptime percentages, latency, recent check history, and open incident start time. Paused monitors are hidden. The JSON at `/api/status` exposes the same data and nothing else.
 

@@ -4,7 +4,12 @@ import { randomUUID, timingSafeEqual } from 'node:crypto';
 import QRCode from 'qrcode';
 import { validateMonitor, type MonitorConfig } from './config.js';
 import {
+  activeAnnouncements,
   backupDatabase,
+  listAnnouncements,
+  removeAnnouncement,
+  saveAnnouncement,
+  validateAnnouncement,
   dashboardData,
   deleteWebhookSettings,
   exportRows,
@@ -142,8 +147,12 @@ export function createServer(
 
   /* ---------- Public routes ---------- */
   app.get('/', (_q, r) => r.redirect('/status'));
-  app.get('/api/status', (_q, r) => r.json(dashboardData(db, true)));
-  app.get('/status', (_q, r) => r.type('html').send(publicPage(dashboardData(db, true))));
+  app.get('/api/status', (_q, r) =>
+    r.json({ announcements: activeAnnouncements(db), monitors: dashboardData(db, true) })
+  );
+  app.get('/status', (_q, r) =>
+    r.type('html').send(publicPage(dashboardData(db, true), activeAnnouncements(db)))
+  );
   app.get('/healthz', (_q, r) => r.json({ ok: true }));
   app.post('/api/heartbeat/:token', async (q, r) => {
     const t = receiveHeartbeat(db, q.params.token);
@@ -389,6 +398,26 @@ export function createServer(
     r.setHeader('Content-Disposition', 'attachment; filename="uptime-export.csv"');
     r.type('text/csv').send(lines.join('\n') + '\n');
   });
+  app.get('/api/admin/announcements', (_q, r) => r.json(listAnnouncements(db)));
+  app.post('/api/admin/announcements', (q, r) => {
+    try {
+      r.status(201).json(saveAnnouncement(db, validateAnnouncement(q.body)));
+    } catch (e) {
+      r.status(400).send(e instanceof Error ? e.message : 'Invalid announcement');
+    }
+  });
+  app.put('/api/admin/announcements/:id', (q, r) => {
+    try {
+      r.json(saveAnnouncement(db, validateAnnouncement(q.body), Number(q.params.id)));
+    } catch (e) {
+      r.status(e instanceof Error && e.message.includes('not found') ? 404 : 400).send(
+        e instanceof Error ? e.message : 'Invalid announcement'
+      );
+    }
+  });
+  app.delete('/api/admin/announcements/:id', (q, r) =>
+    removeAnnouncement(db, Number(q.params.id)) ? r.sendStatus(204) : r.sendStatus(404)
+  );
   app.post('/api/admin/backup', async (_q, r) => {
     if (!process.env.BACKUP_DIR) return r.status(400).send('BACKUP_DIR is not configured');
     try {

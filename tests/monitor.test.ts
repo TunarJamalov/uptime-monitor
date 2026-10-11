@@ -191,7 +191,7 @@ describe('admin to public persistence flow', () => {
     expect(getMonitor(db, saved.id)?.name).toBe('Bordaz');
     recordCheck(db, saved, { status: 'UP', latency: 42 });
     const publicResponse = await fetch(`http://127.0.0.1:${port}/api/status`);
-    const publicData = await publicResponse.json();
+    const publicData = (await publicResponse.json()).monitors;
     expect(publicData).toHaveLength(1);
     expect(publicData[0]).toMatchObject({ name: 'Bordaz', url: 'https://bordaz.app/', latestLatency: 42 });
     const dashboardHtml = await (await fetch(`http://127.0.0.1:${port}/dashboard`)).text();
@@ -649,5 +649,53 @@ describe('admin API and public exposure', () => {
     });
     expect(result.status).toBe('UP');
     expect(received?.body).toBeUndefined();
+  });
+});
+
+describe('announcements', () => {
+  it('shows only active announcements on the public page and API', async () => {
+    db = openDatabase(':memory:');
+    const app = createServer(
+      db,
+      () => {},
+      async () => ({ status: 'UP', latency: 1 })
+    );
+    const server = app.listen(0);
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    const post = (body: unknown) =>
+      fetch(`${base}/api/admin/announcements`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post({ title: '' })).status).toBe(400);
+    expect((await post({ title: 'x', startsAt: 10, endsAt: 5 })).status).toBe(400);
+    const live = await (
+      await post({ title: 'Database <maintenance>', kind: 'maintenance', body: 'Tonight 22:00' })
+    ).json();
+    await post({ title: 'Future', startsAt: Date.now() + 3600000 });
+    await post({ title: 'Past', startsAt: 1, endsAt: 2 });
+    const status = await (await fetch(`${base}/api/status`)).json();
+    expect(status.announcements.map((a: any) => a.title)).toEqual(['Database <maintenance>']);
+    const html = await (await fetch(`${base}/status`)).text();
+    expect(html).toContain('Database &lt;maintenance&gt;');
+    expect(html).not.toContain('Future');
+    expect((await fetch(`${base}/api/admin/announcements`)).ok).toBe(true);
+    expect((await (await fetch(`${base}/api/admin/announcements`)).json()).length).toBe(3);
+    const updated = await fetch(`${base}/api/admin/announcements/${live.id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'Done', kind: 'info', endsAt: Date.now() - 1, startsAt: 1 }),
+    });
+    expect(updated.status).toBe(200);
+    expect((await (await fetch(`${base}/api/status`)).json()).announcements).toEqual([]);
+    expect((await fetch(`${base}/api/admin/announcements/999`, { method: 'DELETE' })).status).toBe(404);
+    expect((await fetch(`${base}/api/admin/announcements/${live.id}`, { method: 'DELETE' })).status).toBe(
+      204
+    );
+    const dashboard = await (await fetch(`${base}/dashboard`)).text();
+    expect(() => new Function(dashboard.match(/<script>([\s\S]*)<\/script>/)![1])).not.toThrow();
+    server.close();
   });
 });

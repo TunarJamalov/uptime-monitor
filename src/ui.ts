@@ -55,6 +55,7 @@ pre{background:var(--bg);padding:10px;border-radius:6px;overflow:auto;white-spac
 details summary{cursor:pointer;font-size:13px;color:var(--muted)}
 .group-title{margin:18px 0 4px;font-size:.95rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .hidden{display:none !important}
+.announcement{border-left:4px solid var(--info)}.announcement.warn{border-left-color:var(--warn)}.announcement.down{border-left-color:var(--down)}
 `;
 
 function page(title: string, body: string, script = '') {
@@ -87,7 +88,13 @@ var sparkline = function (history) {
 };
 `;
 
-export function publicPage(data: any[]) {
+function announcementBanner(a: any) {
+  const cls = a.kind === 'incident' ? 'down' : a.kind === 'maintenance' ? 'warn' : 'info';
+  const window = `${new Date(a.startsAt).toLocaleString()}${a.endsAt ? ` to ${new Date(a.endsAt).toLocaleString()}` : ''}`;
+  return `<section class="card announcement ${cls}"><div class="row"><strong>${escapeHtml(a.title)}</strong><span class="badge ${cls}">${escapeHtml(a.kind)}</span></div>${a.body ? `<p style="white-space:pre-wrap;margin:6px 0 0">${escapeHtml(a.body)}</p>` : ''}<p class="muted">${escapeHtml(window)}</p></section>`;
+}
+
+export function publicPage(data: any[], announcements: any[] = []) {
   const down = data.filter((m) => m.state === 'DOWN' && !m.maintenance);
   const headline =
     data.length === 0
@@ -121,7 +128,7 @@ export function publicPage(data: any[]) {
     .join('');
   return page(
     'Status',
-    `<h1>${escapeHtml(headline)}</h1><p class="muted">Updated ${escapeHtml(new Date().toLocaleString())} · refreshes automatically</p>${sections}<p class="muted">Powered by a self-hosted uptime monitor.</p>`,
+    `<h1>${escapeHtml(headline)}</h1><p class="muted">Updated ${escapeHtml(new Date().toLocaleString())} · refreshes automatically</p>${announcements.map(announcementBanner).join('')}${sections}<p class="muted">Powered by a self-hosted uptime monitor.</p>`,
     'setTimeout(function(){location.reload()},60000)'
   );
 }
@@ -352,6 +359,46 @@ $('monitors').onclick = async function (e) {
   finally { button.disabled = false; }
 };
 
+var announcements = [], editingAnnouncement = null;
+var toLocalInput = function (ts) { var d = new Date(ts); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
+function fillAnnouncement(a) {
+  editingAnnouncement = a ? a.id : null;
+  $('ann-title-input').value = a ? a.title : '';
+  $('ann-kind').value = a ? a.kind : 'info';
+  $('ann-body').value = a ? a.body : '';
+  $('ann-starts').value = a ? toLocalInput(a.startsAt) : '';
+  $('ann-ends').value = a && a.endsAt ? toLocalInput(a.endsAt) : '';
+  $('ann-cancel').classList.toggle('hidden', !a);
+  $('ann-title').textContent = a ? 'Edit announcement' : 'Status page announcements';
+}
+function renderAnnouncements() {
+  var now = Date.now();
+  $('announcements').innerHTML = announcements.map(function (a) {
+    var active = a.startsAt <= now && (!a.endsAt || a.endsAt > now);
+    var cls = a.kind === 'incident' ? 'down' : a.kind === 'maintenance' ? 'warn' : 'info';
+    return '<article class="card" data-ann="' + a.id + '"><div class="row"><div><strong>' + esc(a.title) + '</strong><div class="muted">' + esc(when(a.startsAt)) + (a.endsAt ? ' to ' + esc(when(a.endsAt)) : ', no end') + ' · ' + (active ? 'visible now' : a.startsAt > now ? 'scheduled' : 'expired') + '</div></div><span class="badge ' + cls + '">' + esc(a.kind) + '</span></div>' + (a.body ? '<p style="white-space:pre-wrap">' + esc(a.body) + '</p>' : '') + '<div class="actions"><button data-ann-action="edit">Edit</button><button data-ann-action="delete" class="danger">Delete</button></div></article>';
+  }).join('') || '<p class="muted">No announcements. Use them for planned maintenance or incident updates on the public page.</p>';
+}
+async function loadAnnouncements() { announcements = await (await api('/api/admin/announcements')).json(); renderAnnouncements(); }
+$('ann-form').onsubmit = async function (e) {
+  e.preventDefault();
+  var body = { title: $('ann-title-input').value, kind: $('ann-kind').value, body: $('ann-body').value, startsAt: $('ann-starts').value ? new Date($('ann-starts').value).getTime() : null, endsAt: $('ann-ends').value ? new Date($('ann-ends').value).getTime() : null };
+  var r = await api('/api/admin/announcements' + (editingAnnouncement ? '/' + editingAnnouncement : ''), editingAnnouncement ? 'PUT' : 'POST', body);
+  showMessage('ann-message', r.ok ? 'Announcement saved' : await r.text(), !r.ok);
+  if (r.ok) { fillAnnouncement(null); loadAnnouncements(); }
+};
+$('ann-cancel').onclick = function () { fillAnnouncement(null); };
+$('announcements').onclick = async function (e) {
+  var button = e.target.closest('[data-ann-action]'); if (!button) return;
+  var id = Number(button.closest('[data-ann]').getAttribute('data-ann'));
+  var a = announcements.find(function (x) { return x.id === id; });
+  if (button.getAttribute('data-ann-action') === 'edit') { fillAnnouncement(a); window.scrollTo({ top: $('ann-form').offsetTop - 20, behavior: 'smooth' }); return; }
+  if (!confirm('Delete announcement "' + a.title + '"?')) return;
+  await api('/api/admin/announcements/' + id, 'DELETE');
+  if (editingAnnouncement === id) fillAnnouncement(null);
+  loadAnnouncements();
+};
+loadAnnouncements();
 $('backup').onclick = async function () {
   var r = await api('/api/admin/backup', 'POST');
   showMessage('tools-message', r.ok ? 'Backup written to ' + (await r.json()).file : await r.text(), !r.ok);
@@ -365,7 +412,8 @@ setInterval(function () { if (!editing && document.visibilityState === 'visible'
 export function dashboardPage() {
   return page(
     'Dashboard',
-    `<h1>Monitor dashboard</h1>${navigation('/dashboard')}<div id="summary" class="summary"></div><section class="panel"><h2 id="form-title">Add monitor</h2>${monitorForm}</section><div id="monitors"></div><section class="panel"><h2>Tools</h2><div class="actions"><button id="backup">Create database backup</button></div><p id="tools-message" class="msg"></p></section>`,
+    `<h1>Monitor dashboard</h1>${navigation('/dashboard')}<div id="summary" class="summary"></div><section class="panel"><h2 id="form-title">Add monitor</h2>${monitorForm}</section><div id="monitors"></div><section class="panel"><h2 id="ann-title">Status page announcements</h2><form id="ann-form" class="grid"><input type="hidden" id="ann-id"><label class="wide">Title<input id="ann-title-input" required></label><label>Kind<select id="ann-kind"><option value="info">Info</option><option value="maintenance">Maintenance</option><option value="incident">Incident</option></select></label><label class="full">Message<textarea id="ann-body"></textarea></label><label>Visible from (empty = now)<input id="ann-starts" type="datetime-local"></label><label>Visible until (empty = until deleted)<input id="ann-ends" type="datetime-local"></label><div class="full actions"><button class="primary">Publish announcement</button><button type="button" id="ann-cancel" class="hidden">Cancel edit</button></div></form><p id="ann-message" class="msg"></p><div id="announcements"></div></section>
+<section class="panel"><h2>Tools</h2><div class="actions"><button id="backup">Create database backup</button></div><p id="tools-message" class="msg"></p></section>`,
     dashboardScript
   );
 }

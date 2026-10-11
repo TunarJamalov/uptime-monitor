@@ -43,6 +43,9 @@ export function openDatabase(filename: string): Database.Database {
     'CREATE TABLE IF NOT EXISTS notification_history (id INTEGER PRIMARY KEY AUTOINCREMENT, monitor_id TEXT NOT NULL, incident_id INTEGER, event_type TEXT NOT NULL, provider TEXT NOT NULL, sent_at INTEGER NOT NULL, success INTEGER NOT NULL, error TEXT, FOREIGN KEY(monitor_id) REFERENCES monitors(id))'
   );
   db.exec(
+    "CREATE TABLE IF NOT EXISTS announcements (id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'info', starts_at INTEGER NOT NULL, ends_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+  );
+  db.exec(
     "CREATE TABLE IF NOT EXISTS webhook_settings (id INTEGER PRIMARY KEY CHECK (id=1), name TEXT NOT NULL, url TEXT NOT NULL, headers_json TEXT NOT NULL DEFAULT '{}', timeout_ms INTEGER NOT NULL DEFAULT 10000, enabled INTEGER NOT NULL DEFAULT 1, event_down INTEGER NOT NULL DEFAULT 1, event_recovered INTEGER NOT NULL DEFAULT 1, event_still_down INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
   );
   db.exec(
@@ -608,4 +611,71 @@ export function exportRows(db: Database.Database) {
     )
     .all() as any[];
   return { checks, incidents: incidentRows };
+}
+
+/* ---------- Announcements shown on the public status page ---------- */
+export type AnnouncementKind = 'info' | 'maintenance' | 'incident';
+export interface Announcement {
+  id: number;
+  title: string;
+  body: string;
+  kind: AnnouncementKind;
+  startsAt: number;
+  endsAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+const announcementColumns =
+  'id,title,body,kind,starts_at as startsAt,ends_at as endsAt,created_at as createdAt,updated_at as updatedAt FROM announcements';
+
+export function listAnnouncements(db: Database.Database): Announcement[] {
+  return db.prepare(`SELECT ${announcementColumns} ORDER BY starts_at DESC`).all() as Announcement[];
+}
+/** Announcements that are currently visible: started and not yet ended. */
+export function activeAnnouncements(db: Database.Database, now = Date.now()): Announcement[] {
+  return db
+    .prepare(
+      `SELECT ${announcementColumns} WHERE starts_at<=? AND (ends_at IS NULL OR ends_at>?) ORDER BY starts_at DESC`
+    )
+    .all(now, now) as Announcement[];
+}
+export function validateAnnouncement(raw: unknown) {
+  const a = (raw ?? {}) as Record<string, unknown>;
+  const title = typeof a.title === 'string' ? a.title.trim() : '';
+  if (!title) throw new Error('title is required');
+  const body = typeof a.body === 'string' ? a.body.trim() : '';
+  const kind = (a.kind ?? 'info') as AnnouncementKind;
+  if (!['info', 'maintenance', 'incident'].includes(kind))
+    throw new Error('kind must be info, maintenance, or incident');
+  const startsAt = a.startsAt == null || a.startsAt === '' ? Date.now() : Number(a.startsAt);
+  const endsAt = a.endsAt == null || a.endsAt === '' ? null : Number(a.endsAt);
+  if (!Number.isFinite(startsAt) || (endsAt !== null && !Number.isFinite(endsAt)))
+    throw new Error('startsAt and endsAt must be timestamps');
+  if (endsAt !== null && endsAt <= startsAt) throw new Error('endsAt must be after startsAt');
+  return { title: title.slice(0, 200), body: body.slice(0, 4000), kind, startsAt, endsAt };
+}
+export function saveAnnouncement(
+  db: Database.Database,
+  input: ReturnType<typeof validateAnnouncement>,
+  id?: number
+): Announcement {
+  const now = Date.now();
+  if (id) {
+    const changes = db
+      .prepare('UPDATE announcements SET title=?,body=?,kind=?,starts_at=?,ends_at=?,updated_at=? WHERE id=?')
+      .run(input.title, input.body, input.kind, input.startsAt, input.endsAt, now, id).changes;
+    if (!changes) throw new Error('Announcement not found');
+  } else {
+    id = Number(
+      db
+        .prepare(
+          'INSERT INTO announcements (title,body,kind,starts_at,ends_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?)'
+        )
+        .run(input.title, input.body, input.kind, input.startsAt, input.endsAt, now, now).lastInsertRowid
+    );
+  }
+  return db.prepare(`SELECT ${announcementColumns} WHERE id=?`).get(id) as Announcement;
+}
+export function removeAnnouncement(db: Database.Database, id: number) {
+  return db.prepare('DELETE FROM announcements WHERE id=?').run(id).changes > 0;
 }
