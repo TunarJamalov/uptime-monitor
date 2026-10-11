@@ -7,7 +7,9 @@
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc",
-    "start": "npm run build && node dist/index.js",
+    "start": "node dist/index.js",
+    "lint": "tsc --noEmit && prettier --check \"src/**/*.ts\" \"tests/**/*.ts\"",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\"",
     "test": "vitest run"
   },
   "dependencies": {
@@ -24,8 +26,17 @@
     "@types/node": "^22.10.5",
     "@types/nodemailer": "^6.4.24",
     "@types/qrcode": "^1.5.6",
+    "prettier": "^3.9.10",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2",
     "vitest": "^2.1.8"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/TunarJamalov/uptime-monitor.git"
+  },
+  "engines": {
+    "node": ">=22"
   }
 }

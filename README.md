@@ -1,137 +1,148 @@
 # Uptime Monitor
 
-This project is a self-hosted alternative to a hosted service such as UptimeRobot. It runs as a single Node.js process and requires no Redis, PostgreSQL, Docker, queue, or user account.
+A small, self-hosted alternative to hosted uptime services such as UptimeRobot. It runs as a single Node.js process with a SQLite database. No Redis, PostgreSQL, Docker, queue, or external account is required.
 
 ## Features
 
-- HTTP/HTTPS monitors with interval, timeout, expected status, and keyword checks
-- TCP, DNS, Ping, WebSocket, and SSL monitor types using the same checker interface
-- Optional monitor groups for organizing related services
-- Add, edit, delete, enable, disable, and manually test monitors from the dashboard
-- Maintenance mode for planned outages without creating incidents
-- DOWN after two consecutive failures and RECOVERED after a successful check
-- Real SQLite history and separate incident history
-- 24-hour, 7-day, and 30-day uptime calculations
-- Latency sparklines and optional `maxLatency` slow-response warnings
-- HTTPS certificate validity, expiration date, and remaining days
-- Discord, Slack, and Telegram-compatible webhook notifications
-- Optional SMTP email notifications
-- Generic JSON webhook notifications with custom headers and timeout handling
-- Heartbeat/Cron monitoring with generated private URLs
-- Domain registration expiration monitoring through real WHOIS lookups
-- UDP request/response monitoring with timeout and optional payload matching
-- Per-monitor notification thresholds, recovery preferences, repeat alerts, and notification history
-- Shareable, read-only `/status` page
-- Automatic 90-day history and incident retention
-- systemd and journald support
-
-## Screens
-
-- `/dashboard`: Admin dashboard for monitor management. It contains the monitor form and cards backed by real SQLite data.
-- `/status`: A public, read-only status page without authentication. `/api/status` exposes the same public data as JSON.
-
-> `/dashboard` has no account or authentication system. For an internet-facing installation, protect it with a reverse proxy, IP allowlist, Basic Auth, or VPN. The public page is intended for sharing.
+- Monitor types: HTTP/HTTPS, SSL certificate, TCP port, UDP request/response, DNS, Ping, WebSocket, Heartbeat/Cron, and Domain registration expiration (WHOIS)
+- HTTP checks with custom method, headers, body, expected status, keyword match, JSON path assertion, and slow-response threshold
+- DOWN after a configurable number of consecutive failures (default 2), RECOVERED after one successful check
+- Incident history with start, recovery time, duration, and error
+- 24-hour, 7-day, and 30-day uptime, latency history, and SSL certificate expiry
+- Notifications through Discord, Slack, Telegram, a generic JSON webhook, and optional SMTP email
+- Per-monitor notification policy: failure threshold, repeat alerts, recovery alerts, mute
+- Notification history with provider, event, result, and error
+- Maintenance mode and pause/resume per monitor, optional monitor groups
+- Admin dashboard protected by a password plus optional TOTP two-factor authentication
+- Public, read-only `/status` page and `/api/status` JSON
+- JSON and CSV export, daily SQLite backups, 90-day history retention
+- systemd unit for production deployment
 
 ## Requirements
 
-Node.js 22 or newer and npm. `better-sqlite3` may require C/C++ build tools on some platforms.
+Node.js 22 or newer and npm. `better-sqlite3` ships prebuilt binaries for common platforms; otherwise it needs C/C++ build tools. Ping monitors use the system `ping` command.
 
-## Installation
+## Quick start
 
 ```sh
-git clone <repository-url> uptime-monitor
+git clone https://github.com/TunarJamalov/uptime-monitor.git
 cd uptime-monitor
 npm install
 cp .env.example .env
-npm run build
-npm start
+npm run dev
 ```
 
-The production `monitors.json` starts empty; no demo monitor is seeded. See `monitors.json.example` for an example configuration. Add the first monitor at `http://localhost:3000/dashboard`. Use `npm run dev` for development and `npm test` for tests.
+Open `http://localhost:3000/dashboard` and add the first monitor. For production use `npm run build` followed by `npm start`, or the systemd unit described below.
 
-## Creating A Monitor
+Useful scripts:
 
-The dashboard form supports these fields:
+| Command | Purpose |
+| --- | --- |
+| `npm run dev` | Run from TypeScript sources with `tsx` |
+| `npm run build` | Compile to `dist/` |
+| `npm start` | Run the compiled build |
+| `npm test` | Run the test suite |
+| `npm run lint` | Type-check and verify formatting |
+| `npm run format` | Format sources with Prettier |
 
-- `name`: Display name
-- `url`: Must use `http://` or `https://`
-- `interval`: Seconds, minimum 5
-- `timeout`: Milliseconds, minimum 100
-- `expectedStatus`: HTTP status from 100 to 599
-- `keyword`: Optional, matched case-insensitively in the response body
-- `maxLatency`: Optional millisecond threshold. A response above this value remains UP but is marked `slow`.
-- `type`: `http`, `ssl`, `tcp`, `dns`, `ping`, or `websocket`. HTTP remains the default for existing configurations.
-- `group`: Optional group label for organizing monitors.
-- `method`, `headers`, `body`: Optional HTTP request customization.
-- `jsonPath`, `jsonExpected`: Optional dot-path response JSON assertion.
+## Pages and endpoints
 
-Non-HTTP examples use URL schemes such as `tcp://db.example.com:5432`, `dns://example.com`, `ping://example.com`, and `wss://example.com/socket`.
+| Path | Access | Description |
+| --- | --- | --- |
+| `/status` | Public | Read-only status page, refreshes every minute |
+| `/api/status` | Public | Public JSON: name, type, group, state, uptime, latency history, incidents. Request headers, bodies, payloads, and tokens are never included |
+| `/api/heartbeat/<token>` | Public (secret URL) | `POST` target for heartbeat monitors |
+| `/healthz` | Public | Liveness check for the process itself |
+| `/login` | Public | Admin sign-in form |
+| `/dashboard` | Admin | Monitor management |
+| `/dashboard/notifications` | Admin | Webhook settings and notification history |
+| `/dashboard/security` | Admin | TOTP enrollment |
+| `/api/admin/*` | Admin | JSON API used by the dashboard, plus `/api/admin/export` and `/api/admin/export.csv` |
 
-## UDP Monitoring
+## Admin authentication
 
-Create a UDP monitor with a URL such as `udp://example.com:53`. The checker uses Node.js `dgram` networking, sends the optional `udpPayload`, waits up to the configured timeout for a response, and optionally compares the response text with `udpExpectedResponse`.
+Authentication is enabled by setting `ADMIN_USERNAME`, `ADMIN_PASSWORD`, and `AUTH_ENCRYPTION_KEY` together. The key must be at least 32 characters of random data:
 
-```json
-{
-  "name": "DNS UDP",
-  "url": "udp://example.com:53",
-  "type": "udp",
-  "interval": 60,
-  "timeout": 5000,
-  "udpPayload": "ping",
-  "udpExpectedResponse": "pong",
-  "group": "Network"
-}
+```sh
+openssl rand -base64 48
 ```
 
-UDP has no universal connection handshake. A monitor without a payload still sends an empty datagram and requires a response; services that do not respond to empty datagrams will correctly time out. UDP failures use the normal two-failure DOWN, incident, notification, and recovery flow.
+With these set, `/dashboard` and `/api/admin/*` require a session cookie obtained from `/login`. Sessions last 8 hours, state-changing requests need the CSRF token the dashboard sends automatically, and repeated failed sign-ins are rate limited per IP.
 
-## Notification Policy
+Two-factor authentication is optional. Open `/dashboard/security`, click *Enable authenticator*, scan the QR code, and store the recovery codes offline. Each recovery code works once. The TOTP secret is stored encrypted with `AUTH_ENCRYPTION_KEY`; changing the key makes the stored secret unusable, so keep it backed up. TOTP can also be enrolled before the first sign-in through `GET` and `POST /api/auth/setup` with Basic Auth.
 
-Notification policy is stored per monitor in SQLite and can also be supplied in monitor configuration/API payloads:
+When the three variables are empty the dashboard has no authentication. Only run it that way on a private network or behind a reverse proxy that adds its own protection.
 
-```json
-{
-  "failureThreshold": 2,
-  "notificationsEnabled": true,
-  "recoveryNotifications": true,
-  "repeatNotificationMinutes": 30
-}
-```
+## Creating a monitor
 
-`failureThreshold` controls how many consecutive failures create a DOWN notification. `repeatNotificationMinutes` sends `STILL_DOWN` notifications for an open incident; `0` disables repeats. Recovery notifications can be disabled independently. Each webhook and SMTP attempt is stored in notification history with provider, event, timestamp, success, and error details. Notification failures never stop monitoring.
+Every monitor has a name, type, optional group, check interval in seconds (minimum 5), and timeout in milliseconds (minimum 100). Type-specific fields:
 
-## Domain Expiration Monitoring
+| Type | URL format | Extra fields |
+| --- | --- | --- |
+| `http` | `https://example.com/health` | `expectedStatus`, `method`, `headers`, `body`, `keyword`, `jsonPath` + `jsonExpected`, `maxLatency` |
+| `ssl` | `https://example.com` | Same as `http`; certificate validity and days remaining are recorded on every HTTPS check |
+| `tcp` | `tcp://db.example.com:5432` | `maxLatency` |
+| `udp` | `udp://example.com:53` | `udpPayload`, `udpExpectedResponse` |
+| `dns` | `dns://example.com` | `maxLatency` |
+| `ping` | `ping://example.com` | `maxLatency` |
+| `websocket` | `wss://example.com/socket` | `maxLatency` |
+| `heartbeat` | generated automatically | `expectedInterval`, `gracePeriod` (seconds) |
+| `domain` | `example.com` | `warningThreshold`: 30, 14, or 7 days |
 
-Create a monitor with type `domain` and enter a domain such as `example.com`. The service performs a real WHOIS lookup, stores the registration expiration date in SQLite, and displays the expiration date and days remaining in the dashboard/API. SSL certificate expiration is a separate feature and is not used for domain registration data.
+Notification policy fields apply to every type: `failureThreshold` (default 2), `repeatNotificationMinutes` (0 disables repeats), `recoveryNotifications`, and `notificationsEnabled`.
 
-The warning threshold can be `30`, `14`, or `7` days. When the domain enters the selected window, the existing webhook and optional SMTP notification system sends a `DOMAIN_EXPIRING` alert once for that warning cycle. WHOIS failures are recorded as monitor failures and participate in the normal two-failure incident policy.
+A response above `maxLatency` stays UP but is marked slow and triggers one `SLOW` notification until latency returns to normal. `keyword` is matched case-insensitively against the response body. `jsonPath` is a dot path such as `data.status` compared as a string with `jsonExpected`.
 
-WHOIS servers and response formats vary by TLD. A domain without a parseable registration expiration date is reported as a failed domain check rather than being assigned fake data.
+### Heartbeat / Cron monitors
 
-## Heartbeat / Cron Monitoring
-
-Create a monitor with type `heartbeat` in the dashboard. Set the expected interval and grace period in seconds. The dashboard generates a private URL such as:
-
-```text
-POST /api/heartbeat/<TOKEN>
-```
-
-Do not publish this URL. Add it to a cron job, deployment hook, or scheduled task:
+After saving a heartbeat monitor, the dashboard shows a private URL such as `POST /api/heartbeat/<token>`. Call it from the job you want to watch:
 
 ```cron
 */5 * * * * curl -fsS -X POST https://monitor.example.com/api/heartbeat/TOKEN >/dev/null
 ```
 
-The monitor is considered healthy when a heartbeat arrives. If no heartbeat arrives within `expected interval + grace period`, it becomes DOWN and uses the existing incident and notification system. The next heartbeat changes it to RECOVERED and closes the incident. Tokens are stored in SQLite, are not logged, and are excluded from the public status page.
+If no heartbeat arrives within `expectedInterval + gracePeriod` seconds, the monitor becomes DOWN, opens an incident, and notifies. The next heartbeat recovers it. Tokens are stored in SQLite and never appear on the public page.
 
-Disabling a monitor preserves its history but stops new checks. Deleting a monitor also deletes its check and incident history.
+### Domain expiration monitors
 
-Use the `Maintenance` button before planned work. Maintenance pauses checks and shows a MAINTENANCE state publicly without opening an incident. Use `Resume` to start checks again.
+The service performs a WHOIS lookup, stores the registration expiration date, and shows the days remaining. When the domain enters the warning window a `DOMAIN_EXPIRING` notification is sent once. WHOIS formats vary by TLD; a response without a parseable expiration date is treated as a failed check.
+
+### UDP monitors
+
+The checker sends `udpPayload` (an empty datagram when unset) and waits up to the timeout for a reply. When `udpExpectedResponse` is set the reply must match it exactly. Services that do not answer empty datagrams will time out, which is the expected behavior.
+
+## Notifications
+
+Events: `DOWN`, `STILL_DOWN`, `RECOVERED`, `SLOW`, `SSL_EXPIRING`, `DOMAIN_EXPIRING`, and `TEST`.
+
+Webhook delivery is configured in one of two places:
+
+1. **Environment**: `WEBHOOK_PROVIDER` (`discord`, `slack`, `telegram`, or `generic`) and `WEBHOOK_URL`.
+2. **Dashboard**: the generic webhook on `/dashboard/notifications`, stored in SQLite. When it is enabled it replaces the environment webhook and lets you turn `DOWN`, `RECOVERED`, and `STILL_DOWN` on or off individually.
+
+Discord webhook URLs can be used directly. Slack receives a `text` payload. For Telegram, use a `sendMessage` URL that already contains the bot token and `chat_id`. Generic webhooks receive:
+
+```json
+{
+  "event": "DOWN",
+  "monitor": { "id": "…", "name": "API", "type": "http", "url": "https://api.example.com/health" },
+  "status": "DOWN",
+  "timestamp": "2026-01-01T00:00:00.000Z",
+  "message": "Error: Expected HTTP 200, received 503\nOutage started: …"
+}
+```
+
+Webhook requests always use `POST`, follow no redirects, and must answer with a 2xx status. URLs with credentials, `localhost`, `.local`/`.internal` hosts, or addresses that resolve to private networks are rejected. Every attempt is recorded in the notification history. A failed notification never stops monitoring.
+
+SMTP email is enabled when `SMTP_HOST`, `ALERT_FROM`, and `ALERT_TO` are all set.
+
+## Public status page
+
+`/status` lists active monitors grouped by their group name with state, uptime percentages, latency, recent check history, and open incident start time. Paused monitors are hidden. The JSON at `/api/status` exposes the same data and nothing else.
 
 ## `monitors.json`
 
-The file is used as the initial/import configuration:
+When the database is empty on startup, monitors are imported from `MONITORS_FILE` (default `monitors.json`). Changes made in the dashboard are stored in SQLite and are not written back to the file. See `monitors.json.example`:
 
 ```json
 [
@@ -147,113 +158,55 @@ The file is used as the initial/import configuration:
 ]
 ```
 
-When the application starts with an empty database, it imports this file into SQLite. Dashboard changes are preserved on later starts. To import again, back up the SQLite file and start with a clean database.
-
-## Environment Variables
+## Environment variables
 
 | Variable | Default | Description |
 | --- | --- | --- |
 | `PORT` | `3000` | HTTP port |
+| `HOST` | `0.0.0.0` | Listen address |
+| `TRUST_PROXY` | `loopback` | Express `trust proxy` setting; set to `true` behind a remote reverse proxy so rate limiting sees the real client IP |
 | `DATABASE_PATH` | `./data/uptime.db` | SQLite database file |
 | `MONITORS_FILE` | `monitors.json` | Initial import file |
-| `WEBHOOK_PROVIDER` | `discord` | `discord`, `slack`, or `telegram` |
-| `WEBHOOK_URL` | empty | Notification endpoint; empty disables notifications |
-| `WEBHOOK_HEADERS_JSON` | `{}` | Custom JSON object of headers for generic webhooks |
-| `WEBHOOK_TIMEOUT_MS` | `10000` | Generic webhook request timeout |
-| `ADMIN_USERNAME` | empty | Basic Auth username used for the first authentication factor |
-| `ADMIN_PASSWORD` | empty | Basic Auth password used for the first authentication factor |
-| `AUTH_ENCRYPTION_KEY` | empty | Required with admin credentials; key material used to encrypt the TOTP secret |
-| `SSL_EXPIRY_DAYS` | `30` | Notify once when an HTTPS certificate enters this expiry window |
-| `BACKUP_DIR` | `./data/backups` | Directory for daily SQLite backups; empty disables automatic backups |
-| `SMTP_HOST` | empty | SMTP server for email alerts |
-| `SMTP_PORT` | `587` | SMTP port |
-| `SMTP_SECURE` | `false` | Use TLS for SMTP |
+| `BACKUP_DIR` | `./data/backups` | Daily SQLite backups; empty disables them |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | empty | Admin credentials; both required to enable authentication |
+| `AUTH_ENCRYPTION_KEY` | empty | Required with admin credentials; encrypts the TOTP secret |
+| `WEBHOOK_PROVIDER` | `discord` | `discord`, `slack`, `telegram`, or `generic` |
+| `WEBHOOK_URL` | empty | Webhook endpoint; empty disables webhooks |
+| `WEBHOOK_HEADERS_JSON` | `{}` | Extra headers for generic webhooks |
+| `WEBHOOK_TIMEOUT_MS` | `10000` | Webhook request timeout |
+| `SSL_EXPIRY_DAYS` | `30` | Send `SSL_EXPIRING` once when a certificate has this many days left |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE` | empty / `587` / `false` | SMTP server settings |
 | `SMTP_USER` / `SMTP_PASSWORD` | empty | Optional SMTP credentials |
-| `ALERT_FROM` / `ALERT_TO` | empty | Email sender and recipient; both enable email alerts |
+| `ALERT_FROM` / `ALERT_TO` | empty | Email sender and recipient |
 
-Use `.env.example` as a starting point. Never log or commit the secret webhook URL.
+Never commit `.env`; it is ignored by git.
 
-When both `ADMIN_USERNAME` and `ADMIN_PASSWORD` are set, `/dashboard` and `/api/admin/*` require a session created by Basic Auth plus TOTP (or a one-time recovery code). `/status`, `/api/status`, and heartbeat URLs remain public. Set `AUTH_ENCRYPTION_KEY` to a high-entropy secret and keep it backed up separately; changing it makes stored TOTP credentials unusable. Visit `/api/auth/setup` with Basic Auth once to obtain a secret and recovery codes, then configure the authenticator before signing in at `/login`.
+## Data retention and backups
 
-Set `WEBHOOK_PROVIDER=generic` to send the standard JSON payload to `WEBHOOK_URL`:
+Checks and incidents older than 90 days are deleted once a day. When `BACKUP_DIR` is set, a copy of the database is written there daily and on demand from the dashboard. Deleting a monitor removes its checks, incidents, and notification history. Pausing a monitor keeps its history.
 
-```env
-WEBHOOK_PROVIDER=generic
-WEBHOOK_URL=https://hooks.example.com/uptime
-WEBHOOK_HEADERS_JSON={"X-API-Key":"replace-me"}
-WEBHOOK_TIMEOUT_MS=10000
-```
-
-Generic webhook requests always use `POST` and include `event`, `monitor`, `status`, `timestamp`, and `message`. Only 2xx responses are successful. Invalid URLs, localhost/private-network targets, credentials in URLs, redirects, timeouts, and non-2xx responses are recorded as failed notification attempts. Secrets are not included in logs.
-
-## Notifications
-
-DOWN notifications include the monitor name, URL, error, and outage start. RECOVERED notifications include the monitor name, URL, outage duration, and recovery time. One failure does not create a DOWN state. The monitoring process continues if a webhook request fails.
-
-Discord webhook URLs can be used directly. Slack receives a `text` payload. For Telegram, use a `sendMessage` endpoint with the bot token and `chat_id` in the URL. SSL certificate data is persisted and displayed in the dashboard; a separate SSL expiry webhook alert is on the roadmap.
-
-## Uptime And Incident History
-
-Uptime is the UP ratio of real check results recorded in the selected time window. Time before a monitor was created is not counted as downtime. The current API returns 100 when no check exists yet.
-
-After two consecutive failures, a row is created in the SQLite `incidents` table. When recovery occurs, `recovered_at` and `duration` are stored. An open incident does not send repeated notifications.
-
-## SSL Monitoring
-
-HTTPS monitors inspect peer certificate information during every HTTP check. The dashboard shows valid/invalid, expiration date, and remaining days. HTTP monitors do not show an SSL section. The checker is isolated so TCP, Ping, and DNS types can be added later; this release implements HTTP/HTTPS only.
-
-## Data And Retention
-
-The default SQLite file is `data/uptime.db`. Check records contain timestamp, monitor, status, latency, slow flag, and error. Checks and incidents older than 90 days are removed by daily cleanup. Stop the application before copying the SQLite file, or use SQLite backup:
+## Production deployment
 
 ```sh
-sqlite3 data/uptime.db ".backup 'backup/uptime-$(date +%F).db'"
-```
-
-When `BACKUP_DIR` is configured, the process creates a timestamped SQLite backup during the daily cleanup. The authenticated admin API also provides `/api/admin/export` for monitor/status JSON export and `POST /api/admin/backup` for an immediate backup.
-
-CSV export is available at `/api/admin/export.csv`. Both export endpoints require the same admin authentication as the dashboard. Email alerts use SMTP only when all required SMTP and address variables are configured.
-
-## Production systemd Setup
-
-```sh
-npm ci
-npm run build
-sudo useradd --system --home /opt/uptime-monitor --shell /usr/sbin/nologin uptime
-sudo install -d -o uptime -g uptime /opt/uptime-monitor
-```
-
-Place the built project, `monitors.json`, and `.env` under `/opt/uptime-monitor`. The paths in `systemd/uptime-monitor.service` assume this directory:
-
-```sh
+sudo useradd --system --home /opt/uptime-monitor uptime
+sudo git clone https://github.com/TunarJamalov/uptime-monitor.git /opt/uptime-monitor
+cd /opt/uptime-monitor
+sudo -u uptime npm ci && sudo -u uptime npm run build
+sudo cp .env.example .env   # then edit .env
 sudo cp systemd/uptime-monitor.service /etc/systemd/system/
-sudo systemctl daemon-reload
 sudo systemctl enable --now uptime-monitor
 journalctl -u uptime-monitor -f
 ```
 
-The service runs as the non-root `uptime` user, restarts after crashes, and logs to journald. The `uptime` user must own the `data` directory. If you use a reverse proxy, expose only `/status` and `/api/status` publicly.
+Put a reverse proxy with TLS in front of the service when it is reachable from the internet, set `TRUST_PROXY=true` if that proxy runs on another host, and set `NODE_ENV=production` so session cookies are marked `Secure`.
 
-## Troubleshooting
+## Limitations
 
-- `Cannot read monitors.json`: Ensure the file is in the working directory or provide the correct path with `MONITORS_FILE`.
-- If a monitor does not start, check JSON syntax, URL scheme, interval, and timeout validation.
-- The first failure does not create a DOWN incident because two failures are required.
-- DNS, TLS, and timeout details appear in the latest check error and journald.
-- If native SQLite installation fails, check the Node.js version and platform build tools.
-
-## Security And Limitations
-
-The application does not serve `.env`, SQLite, `monitors.json`, or arbitrary filesystem files. Monitor fields are validated and HTML-escaped. When `ADMIN_USERNAME` and `ADMIN_PASSWORD` are configured, the admin dashboard uses Basic Authentication. Keep the dashboard behind a trusted network or reverse proxy to reduce SSRF risk.
-
-This project does not provide distributed monitoring, multi-user permissions, SMS escalation, or hosted global probes. Checks run from one server; if that server is unreachable, checks stop. Basic Authentication is available for the single admin dashboard.
-
-## Roadmap
-
-- Role-based access and stronger admin session security
-- Richer incident timelines and response-body diagnostics
-- Additional notification providers and multi-region probes
+- Checks run from one location only; there is no multi-region probing.
+- WHOIS parsing depends on the registry's response format.
+- Ping monitors depend on the operating system's `ping` binary and permissions.
+- The dashboard is a plain server-rendered page without a build step; it is intentionally simple.
 
 ## License
 
-MIT. Add the standard MIT copyright notice before publishing the project.
+MIT. See `LICENSE`.

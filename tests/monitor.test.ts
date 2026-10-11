@@ -3,28 +3,143 @@ import dgram from 'node:dgram';
 import { checkMonitor } from '../src/check.js';
 import { checkDomain } from '../src/domain.js';
 import { validateMonitor } from '../src/config.js';
-import { cleanup, evaluateHeartbeats, getMonitor, incidents, logNotification, notificationHistory, openDatabase, receiveHeartbeat, recordCheck, recordDomainResult, saveMonitor, setMaintenance, syncMonitors, uptime } from '../src/db.js';
+import {
+  cleanup,
+  evaluateHeartbeats,
+  getMonitor,
+  incidents,
+  logNotification,
+  notificationHistory,
+  openDatabase,
+  receiveHeartbeat,
+  recordCheck,
+  recordDomainResult,
+  removeMonitor,
+  saveMonitor,
+  setMaintenance,
+  syncMonitors,
+  uptime,
+} from '../src/db.js';
 import { createServer } from '../src/server.js';
 import { notify } from '../src/notify.js';
 import type Database from 'better-sqlite3';
 import { randomTotpSetup, saveTotp, verifyTotp } from '../src/auth.js';
 
-const monitor = { id:'monitor-1', name:'Test', url:'https://example.com', interval:60, timeout:1000, expectedStatus:200 };
+const monitor = {
+  id: 'monitor-1',
+  name: 'Test',
+  url: 'https://example.com',
+  interval: 60,
+  timeout: 1000,
+  expectedStatus: 200,
+};
 let db: Database.Database;
 afterEach(() => db?.close());
 
 describe('checks', () => {
-  it('accepts status and keyword case-insensitively', async () => { const result=await checkMonitor(monitor, async () => new Response('Welcome home',{status:200})); expect(result.status).toBe('UP'); });
-  it('rejects unexpected status and keyword mismatch', async () => { expect((await checkMonitor(monitor,async()=>new Response('',{status:503}))).error).toContain('Expected HTTP 200'); expect((await checkMonitor({...monitor,keyword:'needle'},async()=>new Response('nope',{status:200}))).error).toContain('Keyword'); });
-  it('marks a successful response as slow without making it DOWN', async () => { const result=await checkMonitor({...monitor,maxLatency:1},async()=>{await new Promise(r=>setTimeout(r,5));return new Response('',{status:200});}); expect(result.status).toBe('UP'); expect(result.slow).toBe(true); });
-  it('handles timeout and network errors', async () => { const timeout=checkMonitor(monitor,()=>new Promise((_,reject)=>setTimeout(()=>reject(Object.assign(new Error('aborted'),{name:'AbortError'})),5)) as Promise<Response>); expect((await timeout).error).toContain('timed out'); expect((await checkMonitor(monitor,async()=>{throw new Error('DNS failure')})).error).toBe('DNS failure'); });
-  it('performs a real UDP request and validates the response', async () => { const socket=dgram.createSocket('udp4'); socket.on('message',(message,remote)=>socket.send('pong',remote.port,remote.address)); await new Promise<void>(resolve=>socket.bind(0,'127.0.0.1',()=>resolve())); const port=(socket.address() as any).port; const result=await checkMonitor({id:'udp',name:'UDP',url:`udp://127.0.0.1:${port}`,type:'udp',interval:60,timeout:1000,expectedStatus:200,udpPayload:'ping',udpExpectedResponse:'pong'},fetch); expect(result.status).toBe('UP'); socket.close(); });
+  it('accepts status and keyword case-insensitively', async () => {
+    const result = await checkMonitor(monitor, async () => new Response('Welcome home', { status: 200 }));
+    expect(result.status).toBe('UP');
+  });
+  it('rejects unexpected status and keyword mismatch', async () => {
+    expect((await checkMonitor(monitor, async () => new Response('', { status: 503 }))).error).toContain(
+      'Expected HTTP 200'
+    );
+    expect(
+      (
+        await checkMonitor(
+          { ...monitor, keyword: 'needle' },
+          async () => new Response('nope', { status: 200 })
+        )
+      ).error
+    ).toContain('Keyword');
+  });
+  it('marks a successful response as slow without making it DOWN', async () => {
+    const result = await checkMonitor({ ...monitor, maxLatency: 1 }, async () => {
+      await new Promise((r) => setTimeout(r, 5));
+      return new Response('', { status: 200 });
+    });
+    expect(result.status).toBe('UP');
+    expect(result.slow).toBe(true);
+  });
+  it('handles timeout and network errors', async () => {
+    const timeout = checkMonitor(
+      monitor,
+      () =>
+        new Promise((_, reject) =>
+          setTimeout(() => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })), 5)
+        ) as Promise<Response>
+    );
+    expect((await timeout).error).toContain('timed out');
+    expect(
+      (
+        await checkMonitor(monitor, async () => {
+          throw new Error('DNS failure');
+        })
+      ).error
+    ).toBe('DNS failure');
+  });
+  it('performs a real UDP request and validates the response', async () => {
+    const socket = dgram.createSocket('udp4');
+    socket.on('message', (message, remote) => socket.send('pong', remote.port, remote.address));
+    await new Promise<void>((resolve) => socket.bind(0, '127.0.0.1', () => resolve()));
+    const port = (socket.address() as any).port;
+    const result = await checkMonitor(
+      {
+        id: 'udp',
+        name: 'UDP',
+        url: `udp://127.0.0.1:${port}`,
+        type: 'udp',
+        interval: 60,
+        timeout: 1000,
+        expectedStatus: 200,
+        udpPayload: 'ping',
+        udpExpectedResponse: 'pong',
+      },
+      fetch
+    );
+    expect(result.status).toBe('UP');
+    socket.close();
+  });
 });
 
 describe('state and history', () => {
-  it('transitions down after two failures, does not repeat, and recovers with outage start', () => { db=openDatabase(':memory:'); syncMonitors(db,[monitor]); const down={status:'DOWN' as const,latency:4,error:'offline'}; expect(recordCheck(db,monitor,down,100).transitionedDown).toBe(false); const second=recordCheck(db,monitor,down,200); expect(second.transitionedDown).toBe(true); expect(recordCheck(db,monitor,down,300).transitionedDown).toBe(false); expect(incidents(db,monitor.id)[0]).toMatchObject({startedAt:200,recoveredAt:null,error:'offline'}); expect(getMonitor(db,monitor.id)?.state).toBe('DOWN'); const recovery=recordCheck(db,monitor,{status:'UP',latency:3},500); expect(recovery.recovered).toBe(true); expect(recovery.outageStarted).toBe(200); expect(incidents(db,monitor.id)[0]).toMatchObject({recoveredAt:500,duration:300}); expect(getMonitor(db,monitor.id)?.state).toBe('UP'); });
-  it('calculates uptime and removes records older than 90 days', () => { db=openDatabase(':memory:'); syncMonitors(db,[monitor]); recordCheck(db,monitor,{status:'UP',latency:1},1000); recordCheck(db,monitor,{status:'DOWN',latency:1,error:'x'},2000); expect(uptime(db,monitor.id,0,3000)).toBe(50); recordCheck(db,monitor,{status:'UP',latency:1},0); expect(cleanup(db,Date.now())).toBe(3); });
-  it('persists maintenance mode without changing monitor history', () => { db=openDatabase(':memory:'); syncMonitors(db,[monitor]); expect(setMaintenance(db,monitor.id,true)?.maintenance).toBe(true); expect(getMonitor(db,monitor.id)?.maintenance).toBe(true); expect(setMaintenance(db,monitor.id,false)?.maintenance).toBe(false); });
+  it('transitions down after two failures, does not repeat, and recovers with outage start', () => {
+    db = openDatabase(':memory:');
+    syncMonitors(db, [monitor]);
+    const down = { status: 'DOWN' as const, latency: 4, error: 'offline' };
+    expect(recordCheck(db, monitor, down, 100).transitionedDown).toBe(false);
+    const second = recordCheck(db, monitor, down, 200);
+    expect(second.transitionedDown).toBe(true);
+    expect(recordCheck(db, monitor, down, 300).transitionedDown).toBe(false);
+    expect(incidents(db, monitor.id)[0]).toMatchObject({
+      startedAt: 200,
+      recoveredAt: null,
+      error: 'offline',
+    });
+    expect(getMonitor(db, monitor.id)?.state).toBe('DOWN');
+    const recovery = recordCheck(db, monitor, { status: 'UP', latency: 3 }, 500);
+    expect(recovery.recovered).toBe(true);
+    expect(recovery.outageStarted).toBe(200);
+    expect(incidents(db, monitor.id)[0]).toMatchObject({ recoveredAt: 500, duration: 300 });
+    expect(getMonitor(db, monitor.id)?.state).toBe('UP');
+  });
+  it('calculates uptime and removes records older than 90 days', () => {
+    db = openDatabase(':memory:');
+    syncMonitors(db, [monitor]);
+    recordCheck(db, monitor, { status: 'UP', latency: 1 }, 1000);
+    recordCheck(db, monitor, { status: 'DOWN', latency: 1, error: 'x' }, 2000);
+    expect(uptime(db, monitor.id, 0, 3000)).toBe(50);
+    recordCheck(db, monitor, { status: 'UP', latency: 1 }, 0);
+    expect(cleanup(db, Date.now())).toBe(3);
+  });
+  it('persists maintenance mode without changing monitor history', () => {
+    db = openDatabase(':memory:');
+    syncMonitors(db, [monitor]);
+    expect(setMaintenance(db, monitor.id, true)?.maintenance).toBe(true);
+    expect(getMonitor(db, monitor.id)?.maintenance).toBe(true);
+    expect(setMaintenance(db, monitor.id, false)?.maintenance).toBe(false);
+  });
 });
 
 describe('authentication storage', () => {
@@ -36,79 +151,503 @@ describe('authentication storage', () => {
     saveTotp(db, setup.secret, setup.codes);
     expect(verifyTotp(db, setup.codes[0])).toBe(true);
     expect(verifyTotp(db, setup.codes[0])).toBe(false);
-    if (previous === undefined) delete process.env.AUTH_ENCRYPTION_KEY; else process.env.AUTH_ENCRYPTION_KEY = previous;
+    if (previous === undefined) delete process.env.AUTH_ENCRYPTION_KEY;
+    else process.env.AUTH_ENCRYPTION_KEY = previous;
   });
 });
 
 describe('admin to public persistence flow', () => {
   it('persists a created monitor and serves it from the public database query', async () => {
-    db=openDatabase(':memory:');
-    let refreshed=false;
-    const app=createServer(db,()=>{refreshed=true;},async monitor=>{recordCheck(db,monitor,{status:'UP',latency:42});return {status:'UP',latency:42};});
-    const server=app.listen(0); await new Promise<void>(resolve=>server.once('listening',()=>resolve()));
-    const port=(server.address() as any).port;
-    const created=await fetch(`http://127.0.0.1:${port}/api/admin/monitors`,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({name:'Bordaz',url:'https://bordaz.app/',interval:60,timeout:10000,expectedStatus:200,maxLatency:2000})});
-    expect(created.status).toBe(201); expect(refreshed).toBe(true);
-    const saved=await created.json(); expect(getMonitor(db,saved.id)?.name).toBe('Bordaz');
-    recordCheck(db,saved,{status:'UP',latency:42});
-    const publicResponse=await fetch(`http://127.0.0.1:${port}/api/status`); const publicData=await publicResponse.json();
-    expect(publicData).toHaveLength(1); expect(publicData[0]).toMatchObject({name:'Bordaz',url:'https://bordaz.app/',latestLatency:42});
-    const dashboardHtml=await (await fetch(`http://127.0.0.1:${port}/dashboard`)).text();
-    const dashboardScript=dashboardHtml.match(/<script>([\s\S]*)<\/script>/)?.[1]; expect(dashboardScript).toBeTruthy(); expect(() => new Function(dashboardScript!)).not.toThrow();
+    db = openDatabase(':memory:');
+    let refreshed = false;
+    const app = createServer(
+      db,
+      () => {
+        refreshed = true;
+      },
+      async (monitor) => {
+        recordCheck(db, monitor, { status: 'UP', latency: 42 });
+        return { status: 'UP', latency: 42 };
+      }
+    );
+    const server = app.listen(0);
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    const port = (server.address() as any).port;
+    const created = await fetch(`http://127.0.0.1:${port}/api/admin/monitors`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Bordaz',
+        url: 'https://bordaz.app/',
+        interval: 60,
+        timeout: 10000,
+        expectedStatus: 200,
+        maxLatency: 2000,
+      }),
+    });
+    expect(created.status).toBe(201);
+    expect(refreshed).toBe(true);
+    const saved = await created.json();
+    expect(getMonitor(db, saved.id)?.name).toBe('Bordaz');
+    recordCheck(db, saved, { status: 'UP', latency: 42 });
+    const publicResponse = await fetch(`http://127.0.0.1:${port}/api/status`);
+    const publicData = await publicResponse.json();
+    expect(publicData).toHaveLength(1);
+    expect(publicData[0]).toMatchObject({ name: 'Bordaz', url: 'https://bordaz.app/', latestLatency: 42 });
+    const dashboardHtml = await (await fetch(`http://127.0.0.1:${port}/dashboard`)).text();
+    const dashboardScript = dashboardHtml.match(/<script>([\s\S]*)<\/script>/)?.[1];
+    expect(dashboardScript).toBeTruthy();
+    expect(() => new Function(dashboardScript!)).not.toThrow();
     server.close();
   });
 });
 
 describe('session authentication integration', () => {
   const basic = () => 'Basic ' + Buffer.from('admin:correct-password').toString('base64');
-  const cookies = (response: Response) => response.headers.getSetCookie().map(value => value.split(';', 1)[0]).join('; ');
+  const cookies = (response: Response) =>
+    response.headers
+      .getSetCookie()
+      .map((value) => value.split(';', 1)[0])
+      .join('; ');
   const csrf = (value: string) => value.match(/(?:^|; )csrf=([^;]+)/)?.[1] ?? '';
   let server: ReturnType<typeof appListen>;
-  function appListen(app: ReturnType<typeof createServer>) { const http = app.listen(0); return http; }
-  afterEach(() => { server?.close(); delete process.env.ADMIN_USERNAME; delete process.env.ADMIN_PASSWORD; delete process.env.AUTH_ENCRYPTION_KEY; });
+  function appListen(app: ReturnType<typeof createServer>) {
+    const http = app.listen(0);
+    return http;
+  }
+  afterEach(() => {
+    server?.close();
+    delete process.env.ADMIN_USERNAME;
+    delete process.env.ADMIN_PASSWORD;
+    delete process.env.AUTH_ENCRYPTION_KEY;
+  });
 
   it('supports disabled-TOTP login, public routes, CSRF, logout, and expiry', async () => {
-    process.env.ADMIN_USERNAME = 'admin'; process.env.ADMIN_PASSWORD = 'correct-password'; process.env.AUTH_ENCRYPTION_KEY = 'a'.repeat(40);
-    db = openDatabase(':memory:'); const app = createServer(db, () => {}, async () => ({ status: 'UP', latency: 1 })); server = appListen(app); await new Promise<void>(resolve => server.once('listening', resolve)); const base = `http://127.0.0.1:${(server.address() as any).port}`;
-    expect((await fetch(`${base}/api/status`)).status).toBe(200); expect((await fetch(`${base}/api/admin/monitors`)).status).toBe(401);
-    const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: '{}' }); expect(login.status).toBe(200); const jar = cookies(login); const token = csrf(jar);
+    process.env.ADMIN_USERNAME = 'admin';
+    process.env.ADMIN_PASSWORD = 'correct-password';
+    process.env.AUTH_ENCRYPTION_KEY = 'a'.repeat(40);
+    db = openDatabase(':memory:');
+    const app = createServer(
+      db,
+      () => {},
+      async () => ({ status: 'UP', latency: 1 })
+    );
+    server = appListen(app);
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    expect((await fetch(`${base}/api/status`)).status).toBe(200);
+    expect((await fetch(`${base}/api/admin/monitors`)).status).toBe(401);
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { Authorization: basic(), 'content-type': 'application/json' },
+      body: '{}',
+    });
+    expect(login.status).toBe(200);
+    const jar = cookies(login);
+    const token = csrf(jar);
     expect((await fetch(`${base}/api/admin/monitors`, { headers: { Cookie: jar } })).status).toBe(200);
-    expect((await fetch(`${base}/api/admin/monitors`, { method: 'POST', headers: { Cookie: jar, 'content-type': 'application/json' }, body: JSON.stringify({ name: 'blocked', url: 'https://example.com', interval: 60, timeout: 1000, expectedStatus: 200 }) })).status).toBe(403);
-    const logout = await fetch(`${base}/api/auth/logout`, { method: 'POST', headers: { Cookie: jar, 'x-csrf-token': token } }); expect(logout.status).toBe(200);
-    const second = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: '{}' }); const expiredJar = cookies(second); db.prepare('UPDATE auth_sessions SET expires_at=0').run(); expect((await fetch(`${base}/api/admin/monitors`, { headers: { Cookie: expiredJar } })).status).toBe(401);
+    expect(
+      (
+        await fetch(`${base}/api/admin/monitors`, {
+          method: 'POST',
+          headers: { Cookie: jar, 'content-type': 'application/json' },
+          body: JSON.stringify({
+            name: 'blocked',
+            url: 'https://example.com',
+            interval: 60,
+            timeout: 1000,
+            expectedStatus: 200,
+          }),
+        })
+      ).status
+    ).toBe(403);
+    const logout = await fetch(`${base}/api/auth/logout`, {
+      method: 'POST',
+      headers: { Cookie: jar, 'x-csrf-token': token },
+    });
+    expect(logout.status).toBe(200);
+    const second = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { Authorization: basic(), 'content-type': 'application/json' },
+      body: '{}',
+    });
+    const expiredJar = cookies(second);
+    db.prepare('UPDATE auth_sessions SET expires_at=0').run();
+    expect((await fetch(`${base}/api/admin/monitors`, { headers: { Cookie: expiredJar } })).status).toBe(401);
   });
 
   it('enrolls TOTP with a real QR data URL and accepts a one-time recovery code', async () => {
-    process.env.ADMIN_USERNAME = 'admin'; process.env.ADMIN_PASSWORD = 'correct-password'; process.env.AUTH_ENCRYPTION_KEY = 'a'.repeat(40);
-    db = openDatabase(':memory:'); const app = createServer(db, () => {}, async () => ({ status: 'UP', latency: 1 })); server = appListen(app); await new Promise<void>(resolve => server.once('listening', resolve)); const base = `http://127.0.0.1:${(server.address() as any).port}`;
-    const setup = await (await fetch(`${base}/api/auth/setup`, { headers: { Authorization: basic() } })).json(); expect(setup.qrDataUrl).toMatch(/^data:image\/png;base64,/); expect(setup.otpauth).toContain('otpauth://totp/');
-    expect((await fetch(`${base}/api/auth/setup`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: JSON.stringify({ secret: setup.secret, recoveryCodes: setup.recoveryCodes, code: setup.recoveryCodes[0] }) })).status).toBe(200);
-    const login = await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: JSON.stringify({ code: setup.recoveryCodes[1] }) }); expect(login.status).toBe(200); expect((await fetch(`${base}/api/admin/security`, { headers: { Cookie: cookies(login) } })).status).toBe(200);
-    expect((await fetch(`${base}/api/auth/login`, { method: 'POST', headers: { Authorization: basic(), 'content-type': 'application/json' }, body: JSON.stringify({ code: setup.recoveryCodes[1] }) })).status).toBe(401);
+    process.env.ADMIN_USERNAME = 'admin';
+    process.env.ADMIN_PASSWORD = 'correct-password';
+    process.env.AUTH_ENCRYPTION_KEY = 'a'.repeat(40);
+    db = openDatabase(':memory:');
+    const app = createServer(
+      db,
+      () => {},
+      async () => ({ status: 'UP', latency: 1 })
+    );
+    server = appListen(app);
+    await new Promise<void>((resolve) => server.once('listening', resolve));
+    const base = `http://127.0.0.1:${(server.address() as any).port}`;
+    const setup = await (
+      await fetch(`${base}/api/auth/setup`, { headers: { Authorization: basic() } })
+    ).json();
+    expect(setup.qrDataUrl).toMatch(/^data:image\/png;base64,/);
+    expect(setup.otpauth).toContain('otpauth://totp/');
+    expect(
+      (
+        await fetch(`${base}/api/auth/setup`, {
+          method: 'POST',
+          headers: { Authorization: basic(), 'content-type': 'application/json' },
+          body: JSON.stringify({
+            secret: setup.secret,
+            recoveryCodes: setup.recoveryCodes,
+            code: setup.recoveryCodes[0],
+          }),
+        })
+      ).status
+    ).toBe(200);
+    const login = await fetch(`${base}/api/auth/login`, {
+      method: 'POST',
+      headers: { Authorization: basic(), 'content-type': 'application/json' },
+      body: JSON.stringify({ code: setup.recoveryCodes[1] }),
+    });
+    expect(login.status).toBe(200);
+    expect((await fetch(`${base}/api/admin/security`, { headers: { Cookie: cookies(login) } })).status).toBe(
+      200
+    );
+    expect(
+      (
+        await fetch(`${base}/api/auth/login`, {
+          method: 'POST',
+          headers: { Authorization: basic(), 'content-type': 'application/json' },
+          body: JSON.stringify({ code: setup.recoveryCodes[1] }),
+        })
+      ).status
+    ).toBe(401);
   });
 });
 
 describe('heartbeat monitors', () => {
-  it('defaults heartbeat timing when an existing monitor is changed to heartbeat', () => { const monitor=validateMonitor({name:'Existing',url:'heartbeat://pending',type:'heartbeat',interval:5,timeout:1000,expectedStatus:200,expectedInterval:0},'heartbeat-edit'); expect(monitor.expectedInterval).toBe(60); expect(monitor.gracePeriod).toBe(0); });
-  it('also treats empty or null form values as empty heartbeat timing', () => { expect(validateMonitor({name:'Empty',url:'heartbeat://pending',type:'heartbeat',interval:5,timeout:1000,expectedInterval:'',gracePeriod:0},'heartbeat-empty').expectedInterval).toBe(60); expect(validateMonitor({name:'Null',url:'heartbeat://pending',type:'heartbeat',interval:5,timeout:1000,expectedInterval:null},'heartbeat-null').expectedInterval).toBe(60); });
+  it('defaults heartbeat timing when an existing monitor is changed to heartbeat', () => {
+    const monitor = validateMonitor(
+      {
+        name: 'Existing',
+        url: 'heartbeat://pending',
+        type: 'heartbeat',
+        interval: 5,
+        timeout: 1000,
+        expectedStatus: 200,
+        expectedInterval: 0,
+      },
+      'heartbeat-edit'
+    );
+    expect(monitor.expectedInterval).toBe(60);
+    expect(monitor.gracePeriod).toBe(0);
+  });
+  it('also treats empty or null form values as empty heartbeat timing', () => {
+    expect(
+      validateMonitor(
+        {
+          name: 'Empty',
+          url: 'heartbeat://pending',
+          type: 'heartbeat',
+          interval: 5,
+          timeout: 1000,
+          expectedInterval: '',
+          gracePeriod: 0,
+        },
+        'heartbeat-empty'
+      ).expectedInterval
+    ).toBe(60);
+    expect(
+      validateMonitor(
+        {
+          name: 'Null',
+          url: 'heartbeat://pending',
+          type: 'heartbeat',
+          interval: 5,
+          timeout: 1000,
+          expectedInterval: null,
+        },
+        'heartbeat-null'
+      ).expectedInterval
+    ).toBe(60);
+  });
   it('generates a private token, detects a missed heartbeat, and recovers', () => {
-    db=openDatabase(':memory:');
-    const heartbeat={id:'heartbeat-1',name:'Cron',url:'heartbeat://pending',type:'heartbeat' as const,group:'Jobs',interval:5,timeout:1000,expectedStatus:200,expectedInterval:60,gracePeriod:10,active:true};
-    const saved=saveMonitor(db,heartbeat); expect(saved.heartbeatToken).toBeTruthy();
-    const missedAt=saved.createdAt+(saved.expectedInterval!+saved.gracePeriod!)*1000+1;
-    expect(evaluateHeartbeats(db,missedAt)).toHaveLength(1); expect(getMonitor(db,saved.id)?.state).toBe('DOWN'); expect(incidents(db,saved.id)[0].error).toContain('Heartbeat');
-    const received=receiveHeartbeat(db,saved.heartbeatToken!,missedAt+1000); expect(received?.recovered).toBe(true); expect(getMonitor(db,saved.id)?.state).toBe('UP'); expect(getMonitor(db,saved.id)?.lastHeartbeatAt).toBe(missedAt+1000); expect(incidents(db,saved.id)[0].recoveredAt).toBe(missedAt+1000);
+    db = openDatabase(':memory:');
+    const heartbeat = {
+      id: 'heartbeat-1',
+      name: 'Cron',
+      url: 'heartbeat://pending',
+      type: 'heartbeat' as const,
+      group: 'Jobs',
+      interval: 5,
+      timeout: 1000,
+      expectedStatus: 200,
+      expectedInterval: 60,
+      gracePeriod: 10,
+      active: true,
+    };
+    const saved = saveMonitor(db, heartbeat);
+    expect(saved.heartbeatToken).toBeTruthy();
+    const missedAt = saved.createdAt + (saved.expectedInterval! + saved.gracePeriod!) * 1000 + 1;
+    expect(evaluateHeartbeats(db, missedAt)).toHaveLength(1);
+    expect(getMonitor(db, saved.id)?.state).toBe('DOWN');
+    expect(incidents(db, saved.id)[0].error).toContain('Heartbeat');
+    const received = receiveHeartbeat(db, saved.heartbeatToken!, missedAt + 1000);
+    expect(received?.recovered).toBe(true);
+    expect(getMonitor(db, saved.id)?.state).toBe('UP');
+    expect(getMonitor(db, saved.id)?.lastHeartbeatAt).toBe(missedAt + 1000);
+    expect(incidents(db, saved.id)[0].recoveredAt).toBe(missedAt + 1000);
   });
   it('accepts POST heartbeat requests without exposing the token publicly', async () => {
-    db=openDatabase(':memory:'); const heartbeat={id:'heartbeat-2',name:'Deploy job',url:'heartbeat://pending',type:'heartbeat' as const,interval:5,timeout:1000,expectedStatus:200,expectedInterval:60,gracePeriod:10,active:true}; const saved=saveMonitor(db,heartbeat); const app=createServer(db,()=>{},async()=>({status:'UP',latency:1})); const server=app.listen(0); await new Promise<void>(resolve=>server.once('listening',()=>resolve())); const port=(server.address() as any).port; const response=await fetch(`http://127.0.0.1:${port}/api/heartbeat/${saved.heartbeatToken}`,{method:'POST'}); expect(response.status).toBe(200); const publicJson=await (await fetch(`http://127.0.0.1:${port}/api/status`)).text(); expect(publicJson).not.toContain(saved.heartbeatToken!); server.close();
+    db = openDatabase(':memory:');
+    const heartbeat = {
+      id: 'heartbeat-2',
+      name: 'Deploy job',
+      url: 'heartbeat://pending',
+      type: 'heartbeat' as const,
+      interval: 5,
+      timeout: 1000,
+      expectedStatus: 200,
+      expectedInterval: 60,
+      gracePeriod: 10,
+      active: true,
+    };
+    const saved = saveMonitor(db, heartbeat);
+    const app = createServer(
+      db,
+      () => {},
+      async () => ({ status: 'UP', latency: 1 })
+    );
+    const server = app.listen(0);
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    const port = (server.address() as any).port;
+    const response = await fetch(`http://127.0.0.1:${port}/api/heartbeat/${saved.heartbeatToken}`, {
+      method: 'POST',
+    });
+    expect(response.status).toBe(200);
+    const publicJson = await (await fetch(`http://127.0.0.1:${port}/api/status`)).text();
+    expect(publicJson).not.toContain(saved.heartbeatToken!);
+    server.close();
   });
 });
 
 describe('domain monitors', () => {
-  it('parses a real WHOIS-shaped expiration response and records warning state', async () => { const monitor={id:'domain-1',name:'Example',url:'example.com',type:'domain' as const,interval:60,timeout:1000,expectedStatus:200,warningThreshold:30,active:true}; const expiration=Date.now()+14*86400000; const result=await checkDomain(monitor,async()=>({registryExpiryDate:new Date(expiration).toISOString()})); expect(result.status).toBe('UP'); expect(result.warning).toBe(true); db=openDatabase(':memory:'); saveMonitor(db,monitor); const transition=recordDomainResult(db,monitor,result,100); expect(transition.warning).toBe(true); expect(getMonitor(db,monitor.id)?.domainDaysRemaining).toBeGreaterThan(13); });
+  it('parses a real WHOIS-shaped expiration response and records warning state', async () => {
+    const monitor = {
+      id: 'domain-1',
+      name: 'Example',
+      url: 'example.com',
+      type: 'domain' as const,
+      interval: 60,
+      timeout: 1000,
+      expectedStatus: 200,
+      warningThreshold: 30,
+      active: true,
+    };
+    const expiration = Date.now() + 14 * 86400000;
+    const result = await checkDomain(monitor, async () => ({
+      registryExpiryDate: new Date(expiration).toISOString(),
+    }));
+    expect(result.status).toBe('UP');
+    expect(result.warning).toBe(true);
+    db = openDatabase(':memory:');
+    saveMonitor(db, monitor);
+    const transition = recordDomainResult(db, monitor, result, 100);
+    expect(transition.warning).toBe(true);
+    expect(getMonitor(db, monitor.id)?.domainDaysRemaining).toBeGreaterThan(13);
+  });
 });
 
 describe('notification policy', () => {
-  it('persists per-monitor policy and notification history', () => { db=openDatabase(':memory:'); const saved=saveMonitor(db,{...monitor,failureThreshold:3,recoveryNotifications:false,repeatNotificationMinutes:30,notificationsEnabled:true}); expect(getMonitor(db,saved.id)).toMatchObject({failureThreshold:3,recoveryNotifications:false,repeatNotificationMinutes:30}); logNotification(db,saved.id,7,'DOWN','discord',false,'webhook failed',123); expect(notificationHistory(db,saved.id)[0]).toMatchObject({eventType:'DOWN',provider:'discord',success:0,error:'webhook failed'}); });
-  it('rejects private generic webhook targets without throwing', async () => { const result=await notify('generic','http://127.0.0.1:9999/hook','DOWN',{...monitor,type:'http',state:'UP',outageStarted:null,consecutiveFailures:0,createdAt:0,sslValid:null,sslExpiresAt:null,sslDaysRemaining:null,domainExpirationDate:null,domainDaysRemaining:null,warningAlerted:false,maintenance:false,slowAlerted:false,sslAlerted:false,heartbeatToken:undefined,lastHeartbeatAt:null,failureThreshold:2,recoveryNotifications:true,repeatNotificationMinutes:0,notificationsEnabled:true} as any,'test'); expect(result.success).toBe(false); expect(result.error).toContain('private'); });
+  it('persists per-monitor policy and notification history', () => {
+    db = openDatabase(':memory:');
+    const saved = saveMonitor(db, {
+      ...monitor,
+      failureThreshold: 3,
+      recoveryNotifications: false,
+      repeatNotificationMinutes: 30,
+      notificationsEnabled: true,
+    });
+    expect(getMonitor(db, saved.id)).toMatchObject({
+      failureThreshold: 3,
+      recoveryNotifications: false,
+      repeatNotificationMinutes: 30,
+    });
+    logNotification(db, saved.id, 7, 'DOWN', 'discord', false, 'webhook failed', 123);
+    expect(notificationHistory(db, saved.id)[0]).toMatchObject({
+      eventType: 'DOWN',
+      provider: 'discord',
+      success: 0,
+      error: 'webhook failed',
+    });
+  });
+  it('rejects private generic webhook targets without throwing', async () => {
+    const result = await notify(
+      'generic',
+      'http://127.0.0.1:9999/hook',
+      'DOWN',
+      {
+        ...monitor,
+        type: 'http',
+        state: 'UP',
+        outageStarted: null,
+        consecutiveFailures: 0,
+        createdAt: 0,
+        sslValid: null,
+        sslExpiresAt: null,
+        sslDaysRemaining: null,
+        domainExpirationDate: null,
+        domainDaysRemaining: null,
+        warningAlerted: false,
+        maintenance: false,
+        slowAlerted: false,
+        sslAlerted: false,
+        heartbeatToken: undefined,
+        lastHeartbeatAt: null,
+        failureThreshold: 2,
+        recoveryNotifications: true,
+        repeatNotificationMinutes: 0,
+        notificationsEnabled: true,
+      } as any,
+      'test'
+    );
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('private');
+  });
+});
+
+describe('admin API and public exposure', () => {
+  async function listen() {
+    const app = createServer(
+      db,
+      () => {},
+      async () => ({ status: 'UP', latency: 1 })
+    );
+    const server = app.listen(0);
+    await new Promise<void>((resolve) => server.once('listening', () => resolve()));
+    return { server, base: `http://127.0.0.1:${(server.address() as any).port}` };
+  }
+
+  it('hides request secrets and configuration from the public status API', async () => {
+    db = openDatabase(':memory:');
+    const { server, base } = await listen();
+    const created = await fetch(`${base}/api/admin/monitors`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'Private API',
+        url: 'https://api.example.com/health',
+        interval: 60,
+        timeout: 1000,
+        headers: { Authorization: 'Bearer super-secret' },
+        body: '{"ping":true}',
+        method: 'POST',
+      }),
+    });
+    expect(created.status).toBe(201);
+    const text = await (await fetch(`${base}/api/status`)).text();
+    expect(text).not.toContain('super-secret');
+    expect(text).not.toContain('"headers"');
+    expect(text).not.toContain('"body"');
+    const admin = await (await fetch(`${base}/api/admin/monitors`)).json();
+    expect(admin[0].headers).toEqual({ Authorization: 'Bearer super-secret' });
+    server.close();
+  });
+
+  it('accepts non-HTTP monitors without expectedStatus and rejects TCP URLs without a port', async () => {
+    db = openDatabase(':memory:');
+    const { server, base } = await listen();
+    const post = (body: unknown) =>
+      fetch(`${base}/api/admin/monitors`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    expect((await post({ name: 'DNS', url: 'dns://example.com', interval: 60, timeout: 1000 })).status).toBe(
+      201
+    );
+    const tcp = await post({ name: 'TCP', url: 'tcp://example.com', interval: 60, timeout: 1000 });
+    expect(tcp.status).toBe(400);
+    expect(await tcp.text()).toContain('port');
+    expect(
+      (
+        await post({
+          name: 'Bad',
+          url: 'https://example.com',
+          interval: 60,
+          timeout: 1000,
+          expectedStatus: 999,
+        })
+      ).status
+    ).toBe(400);
+    expect((await fetch(`${base}/api/admin/monitors/missing`, { method: 'DELETE' })).status).toBe(404);
+    server.close();
+  });
+
+  it('returns a heartbeat URL to admins, exports CSV, and reports notification settings', async () => {
+    db = openDatabase(':memory:');
+    const { server, base } = await listen();
+    const created = await (
+      await fetch(`${base}/api/admin/monitors`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Cron',
+          type: 'heartbeat',
+          url: 'heartbeat://pending',
+          interval: 60,
+          timeout: 1000,
+          expectedInterval: 30,
+        }),
+      })
+    ).json();
+    expect(created.heartbeatUrl).toMatch(/\/api\/heartbeat\/[a-f0-9]{32}$/);
+    expect(created.heartbeatToken).toBeUndefined();
+    const list = await (await fetch(`${base}/api/admin/monitors`)).json();
+    expect(list[0].heartbeatUrl).toBe(created.heartbeatUrl);
+    recordCheck(db, list[0], { status: 'DOWN', latency: 3, error: 'a "quoted", error' }, 1000);
+    recordCheck(db, list[0], { status: 'DOWN', latency: 3, error: 'offline' }, 2000);
+    const csv = await (await fetch(`${base}/api/admin/export.csv`)).text();
+    const lines = csv.trim().split('\n');
+    expect(lines[0]).toBe(
+      'record,timestamp,monitorId,monitorName,status,latency,slow,recoveredAt,duration,error'
+    );
+    expect(lines[1]).toContain('"a ""quoted"", error"');
+    expect(lines.some((line) => line.startsWith('incident,'))).toBe(true);
+    const settings = await (await fetch(`${base}/api/admin/notifications/settings`)).json();
+    expect(settings).toMatchObject({ smtpConfigured: false });
+    expect(
+      (
+        await fetch(`${base}/api/admin/monitors`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{nope',
+        })
+      ).status
+    ).toBe(400);
+    server.close();
+  });
+
+  it('deletes notification history together with the monitor', () => {
+    db = openDatabase(':memory:');
+    const saved = saveMonitor(db, { ...monitor, id: 'to-delete' });
+    logNotification(db, saved.id, undefined, 'DOWN', 'discord', true);
+    expect(notificationHistory(db, saved.id)).toHaveLength(1);
+    removeMonitor(db, saved.id);
+    expect(notificationHistory(db, saved.id)).toHaveLength(0);
+    expect(getMonitor(db, saved.id)).toBeUndefined();
+  });
+
+  it('does not send a body with GET requests', async () => {
+    let received: RequestInit | undefined;
+    const result = await checkMonitor({ ...monitor, body: 'ignored' }, async (_url, init) => {
+      received = init;
+      return new Response('', { status: 200 });
+    });
+    expect(result.status).toBe('UP');
+    expect(received?.body).toBeUndefined();
+  });
 });
