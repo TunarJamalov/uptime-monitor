@@ -2,6 +2,8 @@
 
 A small, self-hosted alternative to hosted uptime services such as UptimeRobot. It runs as a single Node.js process with a SQLite database. No Redis, PostgreSQL, Docker, queue, or external account is required.
 
+![Monitor dashboard](docs/dashboard.png)
+
 ## Features
 
 - Monitor types: HTTP/HTTPS, SSL certificate, TCP port, UDP request/response, DNS, Ping, WebSocket, Heartbeat/Cron, and Domain registration expiration (WHOIS)
@@ -137,6 +139,8 @@ Webhook requests always use `POST`, follow no redirects, and must answer with a 
 SMTP email is enabled when `SMTP_HOST`, `ALERT_FROM`, and `ALERT_TO` are all set.
 
 ## Public status page
+
+![Public status page](docs/status-page.png)
 
 Announcements are managed on the dashboard and shown as banners on `/status`. Each has a kind (`info`, `maintenance`, or `incident`), an optional message, a start time, and an optional end time; only announcements within their window are visible. Use them to announce planned work before switching monitors to maintenance mode, or to post updates during an outage.
 

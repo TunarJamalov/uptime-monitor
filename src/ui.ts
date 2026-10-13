@@ -53,6 +53,7 @@ pre{background:var(--bg);padding:10px;border-radius:6px;overflow:auto;white-spac
 .msg.error{color:var(--down)}
 .incident{font-size:13px;padding:4px 0;border-top:1px solid var(--border)}
 details summary{cursor:pointer;font-size:13px;color:var(--muted)}
+#form-panel>summary{font-size:inherit;color:inherit;list-style:none}#form-panel>summary::before{content:'+ ';color:var(--muted)}#form-panel[open]>summary::before{content:'\\2212 '}#form-panel>summary::-webkit-details-marker{display:none}#form-panel[open]>summary{margin-bottom:12px}
 .group-title{margin:18px 0 4px;font-size:.95rem;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
 .hidden{display:none !important}
 .announcement{border-left:4px solid var(--info)}.announcement.warn{border-left-color:var(--warn)}.announcement.down{border-left-color:var(--down)}
@@ -78,13 +79,13 @@ var duration = function (ms) { if (ms == null) return 'ongoing'; var m = Math.fl
 var sparkline = function (history) {
   if (!history || !history.length) return '';
   var max = Math.max.apply(null, history.map(function (h) { return h.latency; }).concat([1]));
-  var w = 360, h = 36, step = w / Math.max(history.length, 1);
+  var w = 360, h = 36, step = Math.min(12, w / Math.max(history.length, 1));
   var bars = history.map(function (p, i) {
     var height = Math.max(2, Math.round((p.latency / max) * (h - 4)));
     var color = p.status === 'DOWN' ? 'var(--down)' : p.slow ? 'var(--warn)' : 'var(--up)';
     return '<rect x="' + (i * step + 1).toFixed(1) + '" y="' + (h - height) + '" width="' + Math.max(1, step - 2).toFixed(1) + '" height="' + height + '" rx="1" fill="' + color + '"><title>' + esc(new Date(p.timestamp).toLocaleString()) + ' · ' + p.status + ' · ' + p.latency + ' ms</title></rect>';
   }).join('');
-  return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="none" aria-label="Latency history">' + bars + '</svg>';
+  return '<svg class="spark" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMinYMid meet" aria-label="Latency history">' + bars + '</svg>';
 };
 `;
 
@@ -252,7 +253,7 @@ function fillForm(m) {
   $('cancel').classList.toggle('hidden', !m);
   $('form-title').textContent = m ? 'Edit "' + m.name + '"' : 'Add monitor';
   applyType();
-  if (m) window.scrollTo({ top: 0, behavior: 'smooth' });
+  if (m) { $('form-panel').open = true; window.scrollTo({ top: 0, behavior: 'smooth' }); }
 }
 
 $('cancel').onclick = function () { fillForm(null); showMessage('monitor-message', ''); };
@@ -412,7 +413,7 @@ setInterval(function () { if (!editing && document.visibilityState === 'visible'
 export function dashboardPage() {
   return page(
     'Dashboard',
-    `<h1>Monitor dashboard</h1>${navigation('/dashboard')}<div id="summary" class="summary"></div><section class="panel"><h2 id="form-title">Add monitor</h2>${monitorForm}</section><div id="monitors"></div><section class="panel"><h2 id="ann-title">Status page announcements</h2><form id="ann-form" class="grid"><input type="hidden" id="ann-id"><label class="wide">Title<input id="ann-title-input" required></label><label>Kind<select id="ann-kind"><option value="info">Info</option><option value="maintenance">Maintenance</option><option value="incident">Incident</option></select></label><label class="full">Message<textarea id="ann-body"></textarea></label><label>Visible from (empty = now)<input id="ann-starts" type="datetime-local"></label><label>Visible until (empty = until deleted)<input id="ann-ends" type="datetime-local"></label><div class="full actions"><button class="primary">Publish announcement</button><button type="button" id="ann-cancel" class="hidden">Cancel edit</button></div></form><p id="ann-message" class="msg"></p><div id="announcements"></div></section>
+    `<h1>Monitor dashboard</h1>${navigation('/dashboard')}<div id="summary" class="summary"></div><details class="panel" id="form-panel"><summary><h2 id="form-title" style="display:inline">Add monitor</h2></summary>${monitorForm}</details><div id="monitors"></div><section class="panel"><h2 id="ann-title">Status page announcements</h2><form id="ann-form" class="grid"><input type="hidden" id="ann-id"><label class="wide">Title<input id="ann-title-input" required></label><label>Kind<select id="ann-kind"><option value="info">Info</option><option value="maintenance">Maintenance</option><option value="incident">Incident</option></select></label><label class="full">Message<textarea id="ann-body"></textarea></label><label>Visible from (empty = now)<input id="ann-starts" type="datetime-local"></label><label>Visible until (empty = until deleted)<input id="ann-ends" type="datetime-local"></label><div class="full actions"><button class="primary">Publish announcement</button><button type="button" id="ann-cancel" class="hidden">Cancel edit</button></div></form><p id="ann-message" class="msg"></p><div id="announcements"></div></section>
 <section class="panel"><h2>Tools</h2><div class="actions"><button id="backup">Create database backup</button></div><p id="tools-message" class="msg"></p></section>`,
     dashboardScript
   );
