@@ -1,4 +1,5 @@
-import 'dotenv/config';
+import { config as loadEnv } from 'dotenv';
+loadEnv({ quiet: true });
 import fs from 'node:fs';
 import { loadMonitors } from './config.js';
 import { checkMonitor, type CheckResult } from './check.js';
